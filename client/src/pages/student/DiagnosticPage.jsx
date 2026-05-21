@@ -313,7 +313,7 @@ export default function DiagnosticPage() {
 
     const checkLock = async () => {
       try {
-        const response = await api.get('/malpractice/check-lock');
+        const response = await api.get('/malpractice/check-lock?sessionType=diagnostic');
         if (!isMounted) return;
         if (response.data?.isLocked) {
           setIsLockedByMalpractice(true);
@@ -1019,7 +1019,24 @@ export default function DiagnosticPage() {
   }
 
   if (isLockedByMalpractice && lockInfo) {
-    return <LockScreen lockInfo={lockInfo} />;
+    return (
+      <LockScreen
+        lockInfo={lockInfo}
+        onUnlock={() => {
+          // Lock expired: clear the locked state and send student back to the
+          // diagnostic start page (previous progress is NOT restored).
+          setIsLockedByMalpractice(false);
+          setLockInfo(null);
+          setScreen('welcome');
+          setSessionToken('');
+          setCurrentQuestion(null);
+          setSelectedOption(null);
+          setQuestionResult(null);
+          setCodingProblems([]);
+          setResults(null);
+        }}
+      />
+    );
   }
 
   return (
@@ -1619,13 +1636,33 @@ export default function DiagnosticPage() {
         )}
       </div>
 
-      {(screen === 'question' || screen === 'coding') ? (
+      {/*
+        MalpracticeMonitor must stay mounted from the moment the test starts
+        to the moment it ends. We NEVER unmount it between questions.
+        - paused=true during 'generating' and 'analyzing' halts detection
+          intervals but keeps the camera stream alive.
+        - sessionType='diagnostic' ensures only the diagnosticLock field is
+          used on the backend.
+      */}
+      {(screen !== 'welcome' && screen !== 'results' && !lockCheckLoading) ? (
         <MalpracticeMonitor
           sessionType="diagnostic"
           assessmentId={sessionToken}
+          paused={screen === 'generating' || screen === 'analyzing'}
           onLocked={(data) => {
             setIsLockedByMalpractice(true);
             setLockInfo(data);
+          }}
+          onUnlock={() => {
+            setIsLockedByMalpractice(false);
+            setLockInfo(null);
+            setScreen('welcome');
+            setSessionToken('');
+            setCurrentQuestion(null);
+            setSelectedOption(null);
+            setQuestionResult(null);
+            setCodingProblems([]);
+            setResults(null);
           }}
           onWarning={() => {}}
         />

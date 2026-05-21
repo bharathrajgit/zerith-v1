@@ -2,16 +2,15 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const { PORT, MONGO_URI } = require('./config/env');
 
 // Import route files
 const authRoutes = require('./routes/auth.routes');
 const moduleRoutes = require('./routes/module.routes');
 const mcqRoutes = require('./routes/mcq.routes');
 const assessmentRoutes = require('./routes/assessment.routes');
-const progressRoutes = require('./routes/progress.routes'); 
+const progressRoutes = require('./routes/progress.routes');
 const streakRoutes = require('./routes/streak.routes');
-const roadmapRoutes =  require('./routes/roadmap.routes');
+const roadmapRoutes = require('./routes/roadmap.routes');
 const mlRoutes = require('./routes/ml.routes');
 const institutionRoutes = require('./routes/institution.auth.routes');
 const institutionStudentRoutes = require('./routes/institution.student.routes');
@@ -44,7 +43,7 @@ app.use('/api/streak', streakRoutes);
 app.use('/api/roadmap', roadmapRoutes);
 app.use('/api/ml', mlRoutes);
 app.use('/api/institution/auth', institutionRoutes);
-app.use('/api/institution/students', institutionStudentRoutes );
+app.use('/api/institution/students', institutionStudentRoutes);
 app.use('/api/institution/analytics', institutionAnalyticsRoutes);
 app.use('/api/diagnostic', diagnosticRoutes);
 app.use('/api/institution/departments', departmentRoutes);

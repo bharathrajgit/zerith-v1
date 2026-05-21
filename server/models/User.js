@@ -183,6 +183,27 @@ const userSchema = new mongoose.Schema(
         default: 0,
       },
     },
+
+    // Independent lock for the Diagnostic Test flow only.
+    // Locking this does NOT affect MCQ Assessments.
+    diagnosticLock: {
+      isLocked: {
+        type: Boolean,
+        default: false,
+      },
+      lockedUntil: {
+        type: Date,
+        default: null,
+      },
+      lockReason: {
+        type: String,
+        default: '',
+      },
+      lockCount: {
+        type: Number,
+        default: 0,
+      },
+    },
   },
   {
     timestamps: true,

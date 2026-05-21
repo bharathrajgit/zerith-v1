@@ -238,7 +238,7 @@ export default function AssessmentPage() {
 
     const checkLock = async () => {
       try {
-        const response = await api.get('/malpractice/check-lock');
+        const response = await api.get('/malpractice/check-lock?sessionType=assessment');
         if (!isMounted) return;
         if (response.data?.isLocked) {
           setIsLockedByMalpractice(true);
@@ -657,7 +657,23 @@ export default function AssessmentPage() {
   }
 
   if (isLockedByMalpractice && lockInfo) {
-    return <LockScreen lockInfo={lockInfo} />;
+    return (
+      <LockScreen
+        lockInfo={lockInfo}
+        onUnlock={() => {
+          // Lock expired: send student back to the assessment intro.
+          // Previous progress is not restored — they must start fresh.
+          setIsLockedByMalpractice(false);
+          setLockInfo(null);
+          setScreen('intro');
+          setCurrentIndex(0);
+          setSelectedOption(null);
+          setSubmitted(false);
+          setShowExplanation(false);
+          setResults(null);
+        }}
+      />
+    );
   }
 
   if (screen === 'loading') {

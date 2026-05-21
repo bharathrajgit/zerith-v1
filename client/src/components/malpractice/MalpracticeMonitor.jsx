@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as faceapi from 'face-api.js';
 import '@tensorflow/tfjs';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import api from '../../services/api';
+import { useMalpractice } from '../../context/MalpracticeContext';
 import styles from './MalpracticeMonitor.module.css';
 
 const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
@@ -12,14 +13,40 @@ const FACE_SAMPLE_WIDTH = 96;
 const FACE_SAMPLE_HEIGHT = 96;
 const DEVICE_SAMPLE_WIDTH = 128;
 const DEVICE_SAMPLE_HEIGHT = 96;
+
+// Debug logging - can be enabled for troubleshooting
+const DEBUG_LOGS = true;
+const log = (...args) => { if (DEBUG_LOGS) console.log('[MalpracticeMonitor]', ...args); };
+const warn = (...args) => { if (DEBUG_LOGS) console.warn('[MalpracticeMonitor]', ...args); };
+
+// Warning limits per violation type
 const WARNING_LIMITS = {
   gaze_away: 3,
   multiple_faces: 3,
-  mobile_detected: 1,
+  mobile_detected: 3,
   tab_switch: 3,
   copy_attempt: 5,
   behavioral_anomaly: 3,
 };
+
+// Cooldown between warnings of the same type
+const VIOLATION_COOLDOWNS = {
+  gaze_away: 15000,
+  multiple_faces: 12000,
+  mobile_detected: 15000,
+  tab_switch: 5000,
+  copy_attempt: 3000,
+  behavioral_anomaly: 15000,
+};
+
+// Consecutive bad frames required before triggering a camera-based warning
+const NO_FACE_FRAMES_REQUIRED = 10;
+const LOOKING_AWAY_FRAMES_REQUIRED = 8;
+
+// Grace periods
+const MOUNT_GRACE_MS = 15000;
+const TRANSITION_GRACE_MS = 8000;
+const MODEL_LOAD_GRACE_MS = 20000;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
@@ -229,7 +256,7 @@ const analyzeFaceSample = (sample) => {
     1
   );
 
-  if (brightness < 20 || contrast < 7 || gradientStrength < 2.5) {
+  if (brightness < 8 || contrast < 4 || gradientStrength < 1.5) {
     detections.faceMissing = true;
     return { detections, confidence: 0.58 };
   }
@@ -316,66 +343,60 @@ const analyzeFaceSample = (sample) => {
 };
 
 const analyzePhoneSample = (sample) => {
-  if (!sample?.data?.length) {
-    return null;
-  }
-
-  const neutralMask = buildMask(sample, (red, green, blue) => {
-    const maxChannel = Math.max(red, green, blue);
-    const minChannel = Math.min(red, green, blue);
-    const brightness = (red + green + blue) / 3;
-    const saturation = maxChannel > 0 ? (maxChannel - minChannel) / maxChannel : 0;
-
-    return (
-      brightness >= 18 &&
-      brightness <= 150 &&
-      saturation <= 0.22 &&
-      !isSkinPixel(red, green, blue)
-    );
-  });
+  if (!sample?.data?.length) return null;
 
   const pixelCount = sample.width * sample.height;
-  const components = connectedComponents(
-    neutralMask,
-    sample.width,
-    sample.height,
-    Math.max(40, Math.round(pixelCount * 0.012))
-  );
 
-  let bestCandidate = null;
+  const screenMask = buildMask(sample, (red, green, blue) => {
+    const brightness = (red + green + blue) / 3;
+    const maxC = Math.max(red, green, blue);
+    const minC = Math.min(red, green, blue);
+    const saturation = maxC > 0 ? (maxC - minC) / maxC : 0;
+    return brightness > 120 && saturation < 0.30 && !isSkinPixel(red, green, blue);
+  });
 
-  components.forEach((component) => {
+  const darkMask = buildMask(sample, (red, green, blue) => {
+    const brightness = (red + green + blue) / 3;
+    const maxC = Math.max(red, green, blue);
+    const minC = Math.min(red, green, blue);
+    const saturation = maxC > 0 ? (maxC - minC) / maxC : 0;
+    return brightness >= 10 && brightness <= 80 && saturation < 0.30 && !isSkinPixel(red, green, blue);
+  });
+
+  const minCompSize = Math.max(20, Math.round(pixelCount * 0.008));
+  const screenComponents = connectedComponents(screenMask, sample.width, sample.height, minCompSize);
+  const darkComponents = connectedComponents(darkMask, sample.width, sample.height, minCompSize);
+
+  const isPhoneShape = (component) => {
     const areaRatio = component.count / Math.max(pixelCount, 1);
     const bboxArea = component.width * component.height;
     const fillRatio = bboxArea > 0 ? component.count / bboxArea : 0;
-    const aspectRatio = component.width / Math.max(component.height, 1);
-    const verticalCenterRatio = component.centerY / Math.max(sample.height - 1, 1);
+    const aspect = component.width / Math.max(component.height, 1);
+    const isPortrait = aspect >= 0.28 && aspect <= 0.85;
+    const isLandscape = aspect >= 1.2 && aspect <= 3.2;
+    if (!isPortrait && !isLandscape) return false;
+    if (areaRatio < 0.010 || areaRatio > 0.45) return false;
+    if (fillRatio < 0.40) return false;
+    return true;
+  };
 
-    const matchesAspect =
-      (aspectRatio >= 0.35 && aspectRatio <= 0.9) ||
-      (aspectRatio >= 1.15 && aspectRatio <= 2.4);
+  const screenCandidates = screenComponents.filter(isPhoneShape);
+  const darkCandidates = darkComponents.filter(isPhoneShape);
 
-    if (!matchesAspect) return;
-    if (areaRatio < 0.018 || areaRatio > 0.26) return;
-    if (fillRatio < 0.55) return;
-    if (verticalCenterRatio < 0.12 || verticalCenterRatio > 0.95) return;
-    if (component.width > sample.width * 0.55 || component.height > sample.height * 0.86) return;
+  if (screenCandidates.length === 0 && darkCandidates.length === 0) return null;
 
-    const confidence = clamp(
-      0.56 + ((fillRatio - 0.55) * 0.55) + (areaRatio * 0.9),
-      0.56,
-      0.94
-    );
+  const best = [...screenCandidates, ...darkCandidates].reduce((top, c) => {
+    const areaRatio = c.count / Math.max(pixelCount, 1);
+    const bboxArea = c.width * c.height;
+    const fillRatio = bboxArea > 0 ? c.count / bboxArea : 0;
+    const score = clamp(0.58 + (fillRatio - 0.40) * 0.4 + (areaRatio * 0.5), 0.58, 0.92);
+    return score > (top?.confidence || 0) ? { confidence: score } : top;
+  }, null);
 
-    if (!bestCandidate || confidence > bestCandidate.confidence) {
-      bestCandidate = {
-        label: 'cell phone',
-        confidence,
-      };
-    }
-  });
+  const bothPresent = screenCandidates.length > 0 && darkCandidates.length > 0;
+  const finalConfidence = bothPresent ? Math.min(best.confidence + 0.08, 0.94) : best.confidence;
 
-  return bestCandidate;
+  return { label: 'cell phone', confidence: finalConfidence };
 };
 
 const getViolationDescription = (type, detectedObject = '') => {
@@ -399,7 +420,7 @@ const getViolationDescription = (type, detectedObject = '') => {
   }
 };
 
-export function LockScreen({ lockInfo }) {
+export function LockScreen({ lockInfo, onUnlock }) {
   const [countdown, setCountdown] = useState(() => formatDuration(lockInfo?.lockedUntil));
 
   useEffect(() => {
@@ -409,25 +430,31 @@ export function LockScreen({ lockInfo }) {
       const remaining = new Date(lockInfo.lockedUntil).getTime() - Date.now();
       if (remaining <= 0) {
         window.clearInterval(intervalId);
-        window.location.reload();
+        if (typeof onUnlock === 'function') {
+          onUnlock();
+        } else {
+          window.location.reload();
+        }
         return;
       }
-
       setCountdown(formatDuration(lockInfo.lockedUntil));
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [lockInfo?.lockedUntil]);
+  }, [lockInfo?.lockedUntil, onUnlock]);
 
   return (
     <div className={styles.lockOverlay}>
-      <div className={styles.lockIcon}>LOCK</div>
-      <h1 className={styles.lockTitle}>Assessment Locked</h1>
+      <div className={styles.lockIcon}>🔒</div>
+      <h1 className={styles.lockTitle}>Test Locked</h1>
       <p className={styles.lockSubtitle}>
         A violation was detected: {getViolationDescription(lockInfo?.lockReason, lockInfo?.detectedObject)}
       </p>
       <div className={styles.countdown}>Unlocks in: {countdown}</div>
-      <p className={styles.lockSubtitle}>Your institution has been notified.</p>
+      <p className={styles.lockSubtitle}>
+        After the timer expires you will be redirected back to the start.
+        {lockInfo?.institutionId ? ' Your institution has been notified.' : ''}
+      </p>
       <p className={styles.lockNotice}>Contact your instructor if this is an error.</p>
     </div>
   );
@@ -437,9 +464,26 @@ export default function MalpracticeMonitor({
   sessionType,
   assessmentId = '',
   topicId = '',
+  paused = false,
   onLocked,
   onWarning,
+  onUnlock,
 }) {
+  // Use centralized malpractice context
+  const {
+    isLocked,
+    lockedUntil,
+    lockReason,
+    lockCount,
+    getWarningCount,
+    incrementWarning,
+    setLocked,
+    clearLock,
+    shouldLock,
+    getWarningLimit,
+    WARNING_LIMITS: CONTEXT_LIMITS,
+  } = useMalpractice(sessionType);
+
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
@@ -456,59 +500,117 @@ export default function MalpracticeMonitor({
   const deviceDetectionModeRef = useRef('inactive');
   const isLockedRef = useRef(false);
   const isSubmittingRef = useRef(false);
-  const cooldownRef = useRef(false);
-  const cooldownTimerRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const gracePeriodRef = useRef(true);
+  const graceTimerRef = useRef(null);
+  const lastViolationTimeRef = useRef({});
   const dismissTimerRef = useRef(null);
   const warningFlashTimerRef = useRef(null);
   const pendingWarningRef = useRef(null);
   const noFaceFramesRef = useRef(0);
   const lookingAwayFramesRef = useRef(0);
   const tabThrottleRef = useRef(0);
-  const tabSwitchesRef = useRef(0);
-  const copyAttemptsRef = useRef(0);
-  const gazeWarningsRef = useRef(0);
-  const faceWarningsRef = useRef(0);
-  const deviceDetectionsRef = useRef(0);
+  const mobileDetectionStreakRef = useRef(0);
+  const mobileLastDetectionTimeRef = useRef(0);
+  const MOBILE_CONFIRMATION_FRAMES = 2;
+  const MOBILE_DETECTION_WINDOW_MS = 15000;
 
   const [status, setStatus] = useState('loading');
   const [cameraError, setCameraError] = useState(false);
   const [isWarningActive, setIsWarningActive] = useState(false);
   const [warningBanner, setWarningBanner] = useState(null);
-  const [lockData, setLockData] = useState(null);
   const [position, setPosition] = useState(() => ({
     x: Math.max(16, window.innerWidth - PREVIEW_WIDTH - 24),
     y: 16,
   }));
 
+  // Sync local lock ref with context state
+  useEffect(() => {
+    isLockedRef.current = isLocked;
+    if (isLocked && lockedUntil) {
+      setLockData({
+        isLocked: true,
+        lockReason: lockReason,
+        warningNumber: lockCount,
+        riskLevel: 'HIGH',
+        lockedUntil,
+        timeRemainingMs: Math.max(0, new Date(lockedUntil).getTime() - Date.now()),
+        timeRemainingFormatted: formatDuration(lockedUntil),
+        lockCount,
+        sessionType,
+      });
+      onLocked?.({
+        isLocked: true,
+        lockReason,
+        lockedUntil,
+        lockCount,
+        sessionType,
+      });
+    }
+  }, [isLocked, lockedUntil, lockReason, lockCount, sessionType, onLocked]);
+
   const stopDetectionLoop = () => {
     if (intervalRef.current) {
-      window.clearInterval(intervalRef.current);
+      window.clearTimeout(intervalRef.current);
       intervalRef.current = null;
     }
-
     if (deviceIntervalRef.current) {
-      window.clearInterval(deviceIntervalRef.current);
+      window.clearTimeout(deviceIntervalRef.current);
       deviceIntervalRef.current = null;
     }
   };
 
-  const resetCooldown = () => {
-    if (cooldownTimerRef.current) {
-      window.clearTimeout(cooldownTimerRef.current);
-    }
+  const scheduleFaceDetection = (delay) => {
+    if (!faceEnabledRef.current || !isMountedRef.current) return;
+    intervalRef.current = window.setTimeout(async () => {
+      if (!isLockedRef.current && isMountedRef.current) await runDetection();
+      if (isMountedRef.current && !isLockedRef.current && faceEnabledRef.current) {
+        scheduleFaceDetection(3000);
+      }
+    }, delay);
+  };
 
-    cooldownRef.current = true;
-    cooldownTimerRef.current = window.setTimeout(() => {
-      cooldownRef.current = false;
-    }, 3000);
+  const scheduleDeviceDetection = (delay) => {
+    if (!deviceEnabledRef.current || !isMountedRef.current) return;
+    deviceIntervalRef.current = window.setTimeout(async () => {
+      if (!isLockedRef.current && isMountedRef.current) await runDeviceDetection();
+      if (isMountedRef.current && !isLockedRef.current && deviceEnabledRef.current) {
+        scheduleDeviceDetection(8000);
+      }
+    }, delay);
+  };
+
+  const startGracePeriod = (ms) => {
+    gracePeriodRef.current = true;
+    if (graceTimerRef.current) window.clearTimeout(graceTimerRef.current);
+    noFaceFramesRef.current = 0;
+    lookingAwayFramesRef.current = 0;
+    resetMobileDetectionStreak();
+    graceTimerRef.current = window.setTimeout(() => {
+      gracePeriodRef.current = false;
+    }, ms);
+  };
+
+  const isOnCooldown = (type) => {
+    const lastTime = lastViolationTimeRef.current[type] || 0;
+    return Date.now() - lastTime < (VIOLATION_COOLDOWNS[type] || 3000);
+  };
+
+  const markViolationFired = (type) => {
+    lastViolationTimeRef.current[type] = Date.now();
+  };
+
+  const resetMobileDetectionStreak = () => {
+    mobileDetectionStreakRef.current = 0;
+    mobileLastDetectionTimeRef.current = 0;
   };
 
   const getSessionData = () => ({
-    tabSwitches: tabSwitchesRef.current,
-    copyAttempts: copyAttemptsRef.current,
-    gazeWarnings: gazeWarningsRef.current,
-    faceWarnings: faceWarningsRef.current,
-    deviceDetections: deviceDetectionsRef.current,
+    tabSwitches: getWarningCount('tab_switch'),
+    copyAttempts: getWarningCount('copy_attempt'),
+    gazeWarnings: getWarningCount('gaze_away'),
+    faceWarnings: getWarningCount('multiple_faces'),
+    deviceDetections: getWarningCount('mobile_detected'),
   });
 
   const captureFrame = () => {
@@ -533,7 +635,6 @@ export default function MalpracticeMonitor({
       window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
-
     if (warningFlashTimerRef.current) {
       window.clearTimeout(warningFlashTimerRef.current);
       warningFlashTimerRef.current = null;
@@ -547,7 +648,6 @@ export default function MalpracticeMonitor({
         dismissMs: deferred ? 9000 : 7000,
       };
     }
-
     return {
       flashMs: 1800,
       dismissMs: 4000,
@@ -558,7 +658,7 @@ export default function MalpracticeMonitor({
     const { deferred = false, detectedObject = '' } = options;
     clearWarningTimers();
 
-    const limit = WARNING_LIMITS[type] || 3;
+    const limit = getWarningLimit(type) || 3;
     const warningLevel = Math.min(3, count);
     const timing = getWarningTiming(type, deferred);
     setWarningBanner({
@@ -592,10 +692,7 @@ export default function MalpracticeMonitor({
   };
 
   const flushQueuedWarning = () => {
-    if (!pendingWarningRef.current) {
-      return;
-    }
-
+    if (!pendingWarningRef.current) return;
     const queuedWarning = pendingWarningRef.current;
     pendingWarningRef.current = null;
     showWarningOverlay(queuedWarning.type, queuedWarning.count, queuedWarning.confidence, {
@@ -604,15 +701,25 @@ export default function MalpracticeMonitor({
     });
   };
 
-  const applyLockedState = (payload) => {
+  const [lockData, setLockData] = useState(null);
+
+  const applyLockedState = useCallback((payload) => {
     isLockedRef.current = true;
     pendingWarningRef.current = null;
     clearWarningTimers();
     setLockData(payload);
     stopDetectionLoop();
     setWarningBanner(null);
+    
+    // Sync with context
+    setLocked({
+      lockedUntil: payload.lockedUntil,
+      lockReason: payload.lockReason,
+      lockCount: payload.lockCount,
+    });
+    
     onLocked?.(payload);
-  };
+  }, [setLocked, onLocked]);
 
   const sendViolation = async ({
     violationType,
@@ -648,94 +755,143 @@ export default function MalpracticeMonitor({
     onWarning?.({
       type,
       count: warningNumber,
-      limit: WARNING_LIMITS[type] || 3,
+      limit: getWarningLimit(type) || 3,
       confidence: formatConfidence(confidence),
       detectedObject: options.detectedObject || '',
     });
   };
 
-  const triggerWarning = async (type, confidence) => {
-    if (isLockedRef.current || isSubmittingRef.current || cooldownRef.current) {
+  const CAMERA_VIOLATIONS = new Set(['gaze_away', 'multiple_faces', 'mobile_detected', 'behavioral_anomaly']);
+
+  // Main warning trigger function - uses centralized context
+  const triggerWarning = useCallback(async (type, confidence) => {
+    // CRITICAL: Always check lock state first
+    if (isLockedRef.current) {
+      log('triggerWarning: already locked, ignoring');
       return;
     }
 
-    let warningNumber = 1;
-    if (type === 'gaze_away') {
-      gazeWarningsRef.current += 1;
-      warningNumber = gazeWarningsRef.current;
-    } else if (type === 'multiple_faces') {
-      faceWarningsRef.current += 1;
-      warningNumber = faceWarningsRef.current;
-    } else if (type === 'tab_switch') {
-      tabSwitchesRef.current += 1;
-      warningNumber = tabSwitchesRef.current;
-    } else if (type === 'copy_attempt') {
-      copyAttemptsRef.current += 1;
-      warningNumber = copyAttemptsRef.current;
+    // Cooldown check
+    if (isOnCooldown(type)) {
+      log('triggerWarning: on cooldown for', type);
+      return;
     }
 
-    isSubmittingRef.current = true;
-    resetCooldown();
+    // Grace period only suppresses camera detections
+    if (CAMERA_VIOLATIONS.has(type) && gracePeriodRef.current) {
+      log('triggerWarning: grace period active for', type);
+      return;
+    }
+
+    // Increment warning in centralized context
+    incrementWarning(type);
+    const warningNumber = getWarningCount(type);
+
+    log('triggerWarning:', type, 'count:', warningNumber, 'limit:', getWarningLimit(type));
+
+    // Mark violation fired for cooldown tracking
+    markViolationFired(type);
+
+    // Show warning UI immediately
     emitWarningLocally(type, warningNumber, confidence);
 
-    try {
-      const payload = await sendViolation({
-        violationType: type,
+    // Check if this warning count reaches the lock threshold
+    const limit = getWarningLimit(type) || 3;
+    if (warningNumber >= limit) {
+      log('triggerWarning: threshold reached,', type, warningNumber, '>=', limit, '- applying lock');
+      
+      const lockPayload = {
+        isLocked: true,
+        lockReason: type,
         warningNumber,
-        confidence,
+        riskLevel: 'HIGH',
+        lockedUntil: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+        timeRemainingMs: 2 * 60 * 60 * 1000,
+        timeRemainingFormatted: '2h 0m 0s',
+        lockCount: lockCount + 1,
+        sessionType,
+      };
+      
+      // Apply lock in context
+      setLocked({
+        lockedUntil: lockPayload.lockedUntil,
+        lockReason: type,
+        lockCount: lockCount + 1,
       });
-
-      if (payload?.isLocked) {
-        applyLockedState({
-          ...payload,
-          lockReason: payload.lockReason || type,
-        });
-      }
-    } catch (error) {
-      console.error('Failed to report violation:', error);
-    } finally {
-      isSubmittingRef.current = false;
-    }
-  };
-
-  const captureAndLock = async (type, detectedObject, confidence) => {
-    if (isLockedRef.current || isSubmittingRef.current) {
+      
+      applyLockedState(lockPayload);
+      
+      // Still send to server for logging
+      sendViolation({ violationType: type, warningNumber, confidence }).catch(() => {});
       return;
     }
 
-    deviceDetectionsRef.current += 1;
-    isSubmittingRef.current = true;
-    emitWarningLocally(type, 1, confidence, { detectedObject });
-
+    // Send to server for logging
     try {
-      const payload = await sendViolation({
-        violationType: type,
-        warningNumber: 1,
-        confidence,
-        detectedObject,
-      });
-
-      applyLockedState({
-        ...payload,
-        detectedObject,
-        lockReason: payload.lockReason || type,
-      });
+      const payload = await sendViolation({ violationType: type, warningNumber, confidence });
+      if (!isMountedRef.current) return;
+      if (payload?.isLocked && !payload?.isDuplicate) {
+        applyLockedState({ ...payload, lockReason: payload.lockReason || type });
+      }
     } catch (error) {
-      console.error('Failed to lock after device detection:', error);
-    } finally {
-      isSubmittingRef.current = false;
+      if (isMountedRef.current) console.error('Failed to report violation:', error);
+    }
+  }, [incrementWarning, getWarningCount, getWarningLimit, setLocked, applyLockedState, lockCount, sessionType]);
+
+  const trackMobileDetection = (confidence) => {
+    const now = Date.now();
+    const timeSinceLastDetection = now - mobileLastDetectionTimeRef.current;
+
+    if (timeSinceLastDetection > MOBILE_DETECTION_WINDOW_MS) {
+      mobileDetectionStreakRef.current = 1;
+    } else {
+      mobileDetectionStreakRef.current += 1;
+    }
+
+    mobileLastDetectionTimeRef.current = now;
+    log('Mobile detection streak:', mobileDetectionStreakRef.current, 'confidence:', confidence);
+
+    return mobileDetectionStreakRef.current >= MOBILE_CONFIRMATION_FRAMES;
+  };
+
+  const handleMobileDetection = async (type, detectedObject, confidence, isHighConfidenceCoco = false) => {
+    if (isLockedRef.current || isSubmittingRef.current) return;
+    if (isOnCooldown(type)) return;
+
+    log('Mobile detection event:', { detectedObject, confidence, isHighConfidenceCoco });
+
+    if (isHighConfidenceCoco) {
+      incrementWarning(type);
+      const warningNumber = getWarningCount(type);
+      isSubmittingRef.current = true;
+      markViolationFired(type);
+      emitWarningLocally(type, warningNumber, confidence, { detectedObject });
+      try {
+        const payload = await sendViolation({ violationType: type, warningNumber, confidence, detectedObject });
+        if (!isMountedRef.current) return;
+        applyLockedState({ ...payload, detectedObject, lockReason: payload.lockReason || type });
+      } catch (err) {
+        if (isMountedRef.current) console.error('Mobile lock failed:', err);
+      } finally {
+        if (isMountedRef.current) isSubmittingRef.current = false;
+      }
+    } else {
+      const isConfirmed = trackMobileDetection(confidence);
+      if (!isConfirmed) {
+        log('Mobile detection not yet confirmed, streak:', mobileDetectionStreakRef.current);
+        return;
+      }
+
+      resetMobileDetectionStreak();
+      await triggerWarning(type, confidence);
     }
   };
 
   const runDetection = async () => {
-    if (!faceEnabledRef.current || isLockedRef.current || isSubmittingRef.current) {
-      return;
-    }
+    if (gracePeriodRef.current || !faceEnabledRef.current || isLockedRef.current || isSubmittingRef.current) return;
 
     const video = videoRef.current;
-    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
-      return;
-    }
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
 
     try {
       if (faceDetectionModeRef.current === 'faceapi') {
@@ -746,8 +902,7 @@ export default function MalpracticeMonitor({
         if (!detections.length) {
           noFaceFramesRef.current += 1;
           lookingAwayFramesRef.current = 0;
-
-          if (noFaceFramesRef.current >= 4) {
+          if (noFaceFramesRef.current >= NO_FACE_FRAMES_REQUIRED) {
             noFaceFramesRef.current = 0;
             await triggerWarning('gaze_away', 0.8);
           }
@@ -764,26 +919,21 @@ export default function MalpracticeMonitor({
 
         const landmarks = detections[0]?.landmarks;
         const nosePoints = landmarks?.getNose?.() || [];
-        if (!nosePoints.length) {
-          return;
-        }
+        if (!nosePoints.length) return;
 
         const nose = nosePoints[3] || nosePoints[Math.floor(nosePoints.length / 2)];
         const videoCenterX = video.videoWidth / 2;
-        const offsetXRatio =
-          Math.abs(Number(nose.x || 0) - videoCenterX) / Math.max(video.videoWidth / 2, 1);
+        const offsetXRatio = Math.abs(Number(nose.x || 0) - videoCenterX) / Math.max(video.videoWidth / 2, 1);
 
         if (offsetXRatio > 0.45) {
           lookingAwayFramesRef.current += 1;
-
-          if (lookingAwayFramesRef.current >= 4) {
+          if (lookingAwayFramesRef.current >= LOOKING_AWAY_FRAMES_REQUIRED) {
             lookingAwayFramesRef.current = 0;
             await triggerWarning('gaze_away', clamp(offsetXRatio, 0.6, 0.96));
           }
         } else {
           lookingAwayFramesRef.current = 0;
         }
-
         return;
       }
 
@@ -793,8 +943,7 @@ export default function MalpracticeMonitor({
         if (!detectedFaces.length) {
           noFaceFramesRef.current += 1;
           lookingAwayFramesRef.current = 0;
-
-          if (noFaceFramesRef.current >= 3) {
+          if (noFaceFramesRef.current >= NO_FACE_FRAMES_REQUIRED) {
             noFaceFramesRef.current = 0;
             await triggerWarning('gaze_away', 0.78);
           }
@@ -810,19 +959,15 @@ export default function MalpracticeMonitor({
         }
 
         const faceBox = detectedFaces[0]?.boundingBox;
-        if (!faceBox?.width || !faceBox?.height) {
-          return;
-        }
+        if (!faceBox?.width || !faceBox?.height) return;
 
-        const faceAreaRatio =
-          (Number(faceBox.width || 0) * Number(faceBox.height || 0)) /
-          Math.max(video.videoWidth * video.videoHeight, 1);
+        const faceAreaRatio = (Number(faceBox.width || 0) * Number(faceBox.height || 0)) / Math.max(video.videoWidth * video.videoHeight, 1);
         const faceCenterX = Number(faceBox.x || 0) + (Number(faceBox.width || 0) / 2);
         const centerOffset = Math.abs((faceCenterX / Math.max(video.videoWidth, 1)) - 0.5);
 
         if (faceAreaRatio < 0.05) {
           noFaceFramesRef.current += 1;
-          if (noFaceFramesRef.current >= 3) {
+          if (noFaceFramesRef.current >= NO_FACE_FRAMES_REQUIRED) {
             noFaceFramesRef.current = 0;
             await triggerWarning('gaze_away', 0.74);
           }
@@ -831,17 +976,17 @@ export default function MalpracticeMonitor({
 
         if (centerOffset > 0.22) {
           lookingAwayFramesRef.current += 1;
-          if (lookingAwayFramesRef.current >= 3) {
+          if (lookingAwayFramesRef.current >= LOOKING_AWAY_FRAMES_REQUIRED) {
             lookingAwayFramesRef.current = 0;
             await triggerWarning('gaze_away', clamp(0.56 + centerOffset, 0.6, 0.95));
           }
         } else {
           lookingAwayFramesRef.current = 0;
         }
-
         return;
       }
 
+      // Heuristic fallback
       const faceAnalysis = analyzeFaceSample(
         createFrameSample(video, faceCanvasRef, FACE_SAMPLE_WIDTH, FACE_SAMPLE_HEIGHT)
       );
@@ -856,8 +1001,7 @@ export default function MalpracticeMonitor({
       if (faceAnalysis.detections.faceMissing || !faceAnalysis.detections.faceCount) {
         noFaceFramesRef.current += 1;
         lookingAwayFramesRef.current = 0;
-
-        if (noFaceFramesRef.current >= 3) {
+        if (noFaceFramesRef.current >= NO_FACE_FRAMES_REQUIRED) {
           noFaceFramesRef.current = 0;
           await triggerWarning('gaze_away', faceAnalysis.confidence);
         }
@@ -868,8 +1012,7 @@ export default function MalpracticeMonitor({
 
       if (faceAnalysis.detections.headPoseAway || faceAnalysis.detections.gazeAway) {
         lookingAwayFramesRef.current += 1;
-
-        if (lookingAwayFramesRef.current >= 3) {
+        if (lookingAwayFramesRef.current >= LOOKING_AWAY_FRAMES_REQUIRED) {
           lookingAwayFramesRef.current = 0;
           await triggerWarning('gaze_away', faceAnalysis.confidence);
         }
@@ -877,19 +1020,15 @@ export default function MalpracticeMonitor({
         lookingAwayFramesRef.current = 0;
       }
     } catch (error) {
-      console.error('Face detection failed:', error);
+      // Swallow detection errors silently
     }
   };
 
   const runDeviceDetection = async () => {
-    if (!deviceEnabledRef.current || isLockedRef.current || isSubmittingRef.current) {
-      return;
-    }
+    if (gracePeriodRef.current || !deviceEnabledRef.current || isLockedRef.current || isSubmittingRef.current) return;
 
     const video = videoRef.current;
-    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
-      return;
-    }
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
 
     try {
       if (deviceDetectionModeRef.current === 'coco' && deviceModelRef.current) {
@@ -900,69 +1039,53 @@ export default function MalpracticeMonitor({
         );
 
         if (dangerDetected) {
-          await captureAndLock(
-            'mobile_detected',
-            dangerDetected.class,
-            Number(dangerDetected.score || 0)
-          );
+          const score = Number(dangerDetected.score || 0);
+          const isHighConf = score > 0.75;
+          await handleMobileDetection('mobile_detected', dangerDetected.class, score, isHighConf);
         }
         return;
       }
 
+      // Heuristic fallback
       const phoneCandidate = analyzePhoneSample(
         createFrameSample(video, deviceCanvasRef, DEVICE_SAMPLE_WIDTH, DEVICE_SAMPLE_HEIGHT)
       );
-
       if (phoneCandidate) {
-        await captureAndLock('mobile_detected', phoneCandidate.label, phoneCandidate.confidence);
+        await handleMobileDetection('mobile_detected', phoneCandidate.label, phoneCandidate.confidence, false);
       }
     } catch (error) {
-      console.error('Device detection failed:', error);
+      // Swallow silently
     }
   };
 
   const startDetectionLoop = () => {
     stopDetectionLoop();
-
-    intervalRef.current = window.setInterval(async () => {
-      if (isLockedRef.current || isSubmittingRef.current) return;
-      await runDetection();
-    }, 800);
-
-    deviceIntervalRef.current = window.setInterval(async () => {
-      if (isLockedRef.current || isSubmittingRef.current) return;
-      await runDeviceDetection();
-    }, 2400);
+    scheduleFaceDetection(3000);
+    scheduleDeviceDetection(8000);
   };
 
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
 
     const init = async () => {
       setStatus('loading');
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: 640,
-            height: 480,
-            facingMode: 'user',
-          },
+          video: { width: 320, height: 240, facingMode: 'user' },
           audio: false,
         });
 
-        if (!isMounted) {
+        if (!isMountedRef.current) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
 
         streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        startGracePeriod(MOUNT_GRACE_MS);
       } catch (error) {
-        console.error('Camera initialization failed:', error);
-        if (!isMounted) return;
+        if (!isMountedRef.current) return;
         setCameraError(true);
         setStatus('no-camera');
         return;
@@ -970,10 +1093,7 @@ export default function MalpracticeMonitor({
 
       try {
         if ('FaceDetector' in window) {
-          faceDetectorRef.current = new window.FaceDetector({
-            fastMode: true,
-            maxDetectedFaces: 3,
-          });
+          faceDetectorRef.current = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 3 });
           faceDetectionModeRef.current = 'native';
         } else {
           await Promise.all([
@@ -984,8 +1104,7 @@ export default function MalpracticeMonitor({
           faceDetectionModeRef.current = 'faceapi';
         }
         faceEnabledRef.current = true;
-      } catch (error) {
-        console.error('Face monitoring model loading failed:', error);
+      } catch {
         faceDetectionModeRef.current = 'heuristic';
         faceEnabledRef.current = true;
       }
@@ -994,33 +1113,46 @@ export default function MalpracticeMonitor({
         deviceModelRef.current = await cocoSsd.load();
         deviceDetectionModeRef.current = 'coco';
         deviceEnabledRef.current = true;
-      } catch (error) {
-        console.error('Device monitoring model loading failed:', error);
+      } catch {
         deviceDetectionModeRef.current = 'heuristic';
         deviceEnabledRef.current = true;
       }
 
-      if (!isMounted) return;
+      if (!isMountedRef.current) return;
       setStatus('active');
+      startGracePeriod(MOUNT_GRACE_MS);
       startDetectionLoop();
     };
 
     init();
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
       stopDetectionLoop();
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      if (cooldownTimerRef.current) {
-        window.clearTimeout(cooldownTimerRef.current);
-      }
+      if (graceTimerRef.current) window.clearTimeout(graceTimerRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach((track) => track.stop());
       clearWarningTimers();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Paused prop watcher
+  useEffect(() => {
+    if (isLockedRef.current) return;
+    if (paused) {
+      stopDetectionLoop();
+      noFaceFramesRef.current = 0;
+      lookingAwayFramesRef.current = 0;
+    } else {
+      startGracePeriod(TRANSITION_GRACE_MS);
+      if (faceEnabledRef.current || deviceEnabledRef.current) {
+        startDetectionLoop();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paused]);
+
+  // Tab switch detection - uses centralized context
   useEffect(() => {
     const registerTabSwitch = async () => {
       const now = Date.now();
@@ -1052,6 +1184,7 @@ export default function MalpracticeMonitor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Copy protection
   useEffect(() => {
     const blockCopy = (event) => {
       event.preventDefault();
@@ -1082,6 +1215,7 @@ export default function MalpracticeMonitor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Flush queued warnings
   useEffect(() => {
     const tryFlushQueuedWarning = () => {
       if (!document.hidden && document.hasFocus()) {
@@ -1109,6 +1243,7 @@ export default function MalpracticeMonitor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Drag handling
   useEffect(() => {
     const handleMouseMove = (event) => {
       if (!draggingRef.current) return;
@@ -1133,7 +1268,7 @@ export default function MalpracticeMonitor({
   }, []);
 
   if (lockData?.isLocked) {
-    return <LockScreen lockInfo={lockData} />;
+    return <LockScreen lockInfo={lockData} onUnlock={onUnlock} />;
   }
 
   const statusLabel =
