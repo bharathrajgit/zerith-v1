@@ -2,6 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { PORT, MONGO_URI } = require('./config/env');
 
 // Import route files
 const authRoutes = require('./routes/auth.routes');
@@ -83,9 +84,6 @@ app.use((req, res) => {
 // ─────────────────────────────────────────────────
 // Database connection & server start
 // ─────────────────────────────────────────────────
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/dsa-platform';
-
 mongoose
   .connect(MONGO_URI)
   .then(() => {

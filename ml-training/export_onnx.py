@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 try:
@@ -9,6 +10,9 @@ except Exception as exc:  # pragma: no cover
     raise SystemExit(
         'PyTorch dependencies are required for export. Install ml-training/requirements.txt first.'
     ) from exc
+
+# Force legacy ONNX exporter for better compatibility
+os.environ['PYTORCH_ONNX_EXPORTER'] = 'legacy'
 
 
 def main():
@@ -39,8 +43,10 @@ def main():
         onnx_path,
         input_names=['image'],
         output_names=['logits'],
-        dynamic_axes={'image': {0: 'batch'}, 'logits': {0: 'batch'}},
         opset_version=12,
+        export_params=True,
+        do_constant_folding=True,
+        verbose=False,
     )
 
     with open(output_dir / 'proctor_labels.json', 'w', encoding='utf-8') as handle:

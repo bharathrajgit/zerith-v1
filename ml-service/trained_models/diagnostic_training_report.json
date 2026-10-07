@@ -34,6 +34,6 @@
     "daily_coding": 1500
   },
   "kaggle_sample_count": 1530,
-  "trained_at": "2026-05-18T09:11:15.736634+00:00",
+  "trained_at": "2026-05-26T10:15:47.874215+00:00",
   "model_path": "D:\\VS Code Folder\\dsa-platform\\ml-service\\trained_models\\diagnostic_classifier.joblib"
 }

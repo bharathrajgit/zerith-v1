@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useMemo } from 'react';
 import api from '../services/api';
+import { useAuth } from './AuthContext';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 const WARNING_LIMITS = {
@@ -159,6 +160,8 @@ const MalpracticeContext = createContext(null);
 
 // ─── Provider ──────────────────────────────────────────────────────────────
 export function MalpracticeProvider({ children }) {
+  const { userType } = useAuth(); // Get user type to skip malpractice checks for non-students
+  
   const [sessions, dispatch] = useReducer(
     (state, action) => {
       switch (action.type) {
@@ -297,6 +300,37 @@ export function MalpracticeProvider({ children }) {
     }
   }, [setLocked, clearLock, getSessionState]);
 
+  // Periodic sync with backend to ensure lock status is up to date
+  useEffect(() => {
+    // Only run malpractice checks for students
+    if (userType !== 'student') {
+      console.log('[MalpracticeContext] Skipping lock checks for non-student user type:', userType);
+      return;
+    }
+
+    const syncInterval = setInterval(async () => {
+      // Only sync if user is authenticated (has a token)
+      const token = localStorage.getItem('dsa_token');
+      if (!token) return;
+      
+      // Only sync if there's an active session (user is actually in a test)
+      const hasActiveSession = Object.keys(sessions).some(
+        type => sessions[type]?.isLocked || sessions[type]?.totalWarnings > 0
+      );
+      
+      if (!hasActiveSession) {
+        return; // Don't sync if no active session
+      }
+      
+      // Check all session types
+      await checkLockStatus('assessment');
+      await checkLockStatus('coding');
+      await checkLockStatus('diagnostic');
+    }, 5000); // Sync every 5 seconds
+
+    return () => clearInterval(syncInterval);
+  }, [checkLockStatus, userType, sessions]);
+
   const getWarningCount = useCallback((sessionType, violationType) => {
     const state = getSessionState(sessionType);
     if (violationType) {
@@ -311,9 +345,8 @@ export function MalpracticeProvider({ children }) {
 
   const shouldLock = useCallback((sessionType, violationType) => {
     const state = getSessionState(sessionType);
-    const count = state.warnings[violationType] || 0;
-    const limit = WARNING_LIMITS[violationType] || 3;
-    return count >= limit;
+    // Lock when total combined warnings reach 3
+    return state.totalWarnings >= 3;
   }, [getSessionState]);
 
   // ── Context Value ────────────────────────────────────────────────────────

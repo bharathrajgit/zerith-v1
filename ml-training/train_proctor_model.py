@@ -7,12 +7,16 @@ try:
     import torch
     from sklearn.metrics import accuracy_score, classification_report
     from torch import nn, optim
+    from torch.cuda.amp import autocast, GradScaler
     from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
     from torchvision import datasets, models, transforms
 except Exception as exc:  # pragma: no cover
     raise SystemExit(
         'PyTorch dependencies are required for training. Install ml-training/requirements.txt first.'
     ) from exc
+
+# Import GPU configuration for RTX 3050 optimization
+from gpu_config import configure_gpu_for_rtx_3050
 
 
 CLASS_LABELS = [
@@ -25,6 +29,27 @@ CLASS_LABELS = [
     'extra_screen_visible',
 ]
 RANDOM_SEED = 42
+
+
+def get_dataset_slugs():
+    multi_value = os.environ.get('PROCTOR_KAGGLE_DATASETS', '')
+    single_value = os.environ.get('PROCTOR_KAGGLE_DATASET', '')
+
+    slugs = []
+    if multi_value.strip():
+        slugs.extend(item.strip() for item in multi_value.split(','))
+    if single_value.strip():
+        slugs.append(single_value.strip())
+
+    unique = []
+    seen = set()
+    for slug in slugs:
+        normalized = slug.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
 
 
 class OrderedImageFolder(datasets.ImageFolder):
@@ -131,13 +156,15 @@ def build_metrics_payload(
     class_counts,
     best_metrics,
     checkpoint_path,
+    dataset_slugs,
 ):
     dataset_counts = Counter(base_dataset.targets)
     report = best_metrics['report']
 
     return {
         'model_name': 'proctor_monitor',
-        'dataset_slug': os.environ.get('PROCTOR_KAGGLE_DATASET', ''),
+        'dataset_slug': dataset_slugs[0] if dataset_slugs else '',
+        'dataset_slugs': dataset_slugs,
         'class_labels': CLASS_LABELS,
         'dataset_class_distribution': {
             CLASS_LABELS[index]: int(dataset_counts.get(index, 0))
@@ -171,10 +198,14 @@ def build_metrics_payload(
 
 
 def main():
+    # ✅ Configure GPU for RTX 3050 optimization
+    configure_gpu_for_rtx_3050()
+    
     base_dir = Path(__file__).resolve().parent
     prepared_dir = base_dir / 'data' / 'prepared'
     artifacts_dir = base_dir / 'artifacts'
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    dataset_slugs = get_dataset_slugs()
 
     torch.manual_seed(RANDOM_SEED)
     if torch.cuda.is_available():
@@ -183,8 +214,22 @@ def main():
     base_dataset, train_dataset, val_dataset, train_indices, val_indices = build_datasets(prepared_dir)
     sampler, train_class_counts, class_weights = build_training_sampler(base_dataset, train_indices)
 
-    train_loader = DataLoader(train_dataset, batch_size=16, sampler=sampler)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    # RTX 3050 optimized: batch_size=8 (reduced from 16), num_workers=0 (no CPU overhead), pin_memory=True (GPU-optimized)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=8,
+        sampler=sampler,
+        num_workers=0,
+        pin_memory=True,
+        drop_last=False,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=8,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True,
+    )
 
     model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
     model.classifier[3] = nn.Linear(model.classifier[3].in_features, len(CLASS_LABELS))
@@ -201,29 +246,51 @@ def main():
     best_score = -1.0
     best_metrics = None
 
+    # Mixed precision training for RTX 3050 (faster + less memory)
+    scaler = GradScaler() if device.type == 'cuda' else None
+
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
+        torch.cuda.empty_cache() if device.type == 'cuda' else None
 
         for images, labels in train_loader:
-            images = images.to(device)
-            labels = labels.to(device)
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            logits = model(images)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
+            
+            # Mixed precision training for GPU efficiency
+            if scaler is not None:
+                with autocast():
+                    logits = model(images)
+                    loss = criterion(logits, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                logits = model(images)
+                loss = criterion(logits, labels)
+                loss.backward()
+                optimizer.step()
 
             running_loss += float(loss.item()) * labels.size(0)
 
         evaluation = evaluate_model(model, val_loader, device)
         average_loss = running_loss / max(len(train_indices), 1)
+        
+        # GPU memory stats for RTX 3050
+        gpu_mem_msg = ''
+        if device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated(0) / 1e9
+            reserved = torch.cuda.memory_reserved(0) / 1e9
+            gpu_mem_msg = f' | GPU: {allocated:.2f}GB/{reserved:.2f}GB'
+        
         print(
             f'Epoch {epoch + 1}/{epochs} - '
             f'train_loss={average_loss:.4f} '
             f'val_accuracy={evaluation["accuracy"]:.4f} '
-            f'val_macro_f1={evaluation["macro_f1"]:.4f}'
+            f'val_macro_f1={evaluation["macro_f1"]:.4f}{gpu_mem_msg}'
         )
 
         score = evaluation['macro_f1'] + (evaluation['accuracy'] * 0.01)
@@ -249,6 +316,7 @@ def main():
         train_class_counts,
         best_metrics,
         checkpoint_path,
+        dataset_slugs,
     )
     with open(metrics_path, 'w', encoding='utf-8') as handle:
         json.dump(metrics, handle, indent=2)

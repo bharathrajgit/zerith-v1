@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import StudentLayout from '../../components/layout/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
-import { Check, Lock, Clock } from 'lucide-react';
+import { Check, Lock, Clock, ArrowLeft } from 'lucide-react';
 import styles from './TopicLearningPage.module.css';
 
 const STEPS = ['Watch Video', 'MCQ Round', 'Coding Problem'];
@@ -248,7 +248,17 @@ export default function TopicLearningPage() {
   return (
     <StudentLayout>
       <div className={styles.page}>
-        <h1 className={styles.topicTitle}>{topic.title}</h1>
+        {/* Header with back button */}
+        <div className={styles.header}>
+          <button
+            onClick={() => navigate(-1)}
+            className={styles.backButton}
+          >
+            <ArrowLeft size={20} />
+            <span>Back</span>
+          </button>
+          <h1 className={styles.topicTitle}>{topic.title}</h1>
+        </div>
 
         {/* Stepper */}
         <div className={styles.stepper}>

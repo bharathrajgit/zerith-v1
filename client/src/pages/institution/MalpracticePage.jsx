@@ -15,10 +15,12 @@ import styles from './MalpracticePage.module.css';
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All Types' },
   { value: 'gaze_away', label: 'Gaze Away' },
+  { value: 'face_missing', label: 'Face Missing' },
   { value: 'multiple_faces', label: 'Multiple Faces' },
   { value: 'mobile_detected', label: 'Mobile Detected' },
   { value: 'tab_switch', label: 'Tab Switch' },
   { value: 'copy_attempt', label: 'Copy Attempt' },
+  { value: 'behavioral_anomaly', label: 'Behavioral Anomaly' },
 ];
 
 const RISK_OPTIONS = [
@@ -30,6 +32,7 @@ const RISK_OPTIONS = [
 
 const TYPE_LABELS = {
   gaze_away: 'Gaze Away',
+  face_missing: 'Face Missing',
   multiple_faces: 'Multiple Faces',
   mobile_detected: 'Mobile Detected',
   tab_switch: 'Tab Switch',
@@ -81,6 +84,9 @@ export default function MalpracticePage() {
     imageUrl: '',
     loading: false,
   });
+  const [lockedStudents, setLockedStudents] = useState([]);
+  const [lockedStudentsLoading, setLockedStudentsLoading] = useState(false);
+  const [lockedStudentEvidence, setLockedStudentEvidence] = useState({});
 
   const loadStats = async () => {
     setStatsLoading(true);
@@ -97,6 +103,46 @@ export default function MalpracticePage() {
       toast.error(error?.response?.data?.message || 'Failed to load malpractice stats');
     } finally {
       setStatsLoading(false);
+    }
+  };
+
+  const loadLockedStudents = async () => {
+    setLockedStudentsLoading(true);
+
+    try {
+      const { data } = await api.get('/institution/malpractice/locked-students');
+      if (data?.success) {
+        const students = Array.isArray(data?.lockedStudents) ? data.lockedStudents : [];
+        setLockedStudents(students);
+        
+        // Load evidence images for students with evidence
+        const evidencePromises = students
+          .filter(s => s.hasEvidence && s.latestEvidenceId)
+          .map(async (student) => {
+            try {
+              const response = await api.get(`/institution/analytics/malpractice/evidence/${student.latestEvidenceId}/image`, {
+                responseType: 'blob',
+              });
+              const imageUrl = URL.createObjectURL(response.data);
+              return { studentId: student._id, imageUrl };
+            } catch (error) {
+              console.error('Failed to load evidence for student:', student._id, error);
+              return { studentId: student._id, imageUrl: null };
+            }
+          });
+        
+        const evidenceResults = await Promise.all(evidencePromises);
+        const evidenceMap = {};
+        evidenceResults.forEach(result => {
+          evidenceMap[result.studentId] = result.imageUrl;
+        });
+        setLockedStudentEvidence(evidenceMap);
+      }
+    } catch (error) {
+      toast.error(error?.response?.data?.message || 'Failed to load locked students');
+      setLockedStudents([]);
+    } finally {
+      setLockedStudentsLoading(false);
     }
   };
 
@@ -139,6 +185,7 @@ export default function MalpracticePage() {
 
   useEffect(() => {
     loadStats();
+    loadLockedStudents();
   }, []);
 
   useEffect(() => {
@@ -154,27 +201,35 @@ export default function MalpracticePage() {
       setPreviewUrls({});
 
       const visibleEvidenceLogs = logs.filter((log) => log.hasEvidence && log.latestEvidenceId);
+      console.log('[MalpracticePage] Loading previews for logs:', visibleEvidenceLogs.length);
+      
       if (!visibleEvidenceLogs.length) {
         return;
       }
 
       const previewResults = await Promise.allSettled(
         visibleEvidenceLogs.map(async (log) => {
-          const response = await api.get(
-            `/institution/analytics/malpractice/evidence/${log.latestEvidenceId}/image`,
-            { responseType: 'blob' }
-          );
+          try {
+            console.log('[MalpracticePage] Loading evidence for log:', log._id, 'evidenceId:', log.latestEvidenceId);
+            const response = await api.get(
+              `/institution/analytics/malpractice/evidence/${log.latestEvidenceId}/image`,
+              { responseType: 'blob' }
+            );
 
-          return {
-            id: log._id,
-            url: URL.createObjectURL(response.data),
-          };
+            return {
+              id: log._id,
+              url: URL.createObjectURL(response.data),
+            };
+          } catch (error) {
+            console.error('[MalpracticePage] Failed to load evidence for log:', log._id, error);
+            return null;
+          }
         })
       );
 
       if (cancelled) {
         previewResults.forEach((result) => {
-          if (result.status === 'fulfilled') {
+          if (result.status === 'fulfilled' && result.value) {
             URL.revokeObjectURL(result.value.url);
           }
         });
@@ -183,11 +238,12 @@ export default function MalpracticePage() {
 
       const nextUrls = {};
       previewResults.forEach((result) => {
-        if (result.status === 'fulfilled') {
+        if (result.status === 'fulfilled' && result.value) {
           nextUrls[result.value.id] = result.value.url;
         }
       });
 
+      console.log('[MalpracticePage] Loaded previews:', Object.keys(nextUrls).length);
       previewUrlsRef.current = nextUrls;
       setPreviewUrls(nextUrls);
     };
@@ -217,6 +273,7 @@ export default function MalpracticePage() {
     try {
       const { data } = await api.post('/institution/malpractice/unlock', {
         studentId: log.userId._id,
+        sessionType: log.sessionType,
         reason: 'Institution manual override',
       });
 
@@ -225,7 +282,33 @@ export default function MalpracticePage() {
       }
 
       toast.success('Student unlocked');
-      await Promise.all([loadStats(), loadLogs(page, filters)]);
+      await Promise.all([loadStats(), loadLogs(page, filters), loadLockedStudents()]);
+    } catch (error) {
+      toast.error(error?.response?.data?.message || error.message || 'Failed to unlock student');
+    }
+  };
+
+  const handleUnlockStudent = async (student) => {
+    if (!student?._id) return;
+
+    try {
+      const { data } = await api.post('/institution/malpractice/unlock', {
+        studentId: student._id,
+        reason: 'Institution manual override',
+      });
+
+      if (!data?.success) {
+        throw new Error(data?.message || 'Unlock failed');
+      }
+
+      toast.success('Student unlocked');
+      
+      // Clean up evidence URL for this student
+      if (lockedStudentEvidence[student._id]) {
+        URL.revokeObjectURL(lockedStudentEvidence[student._id]);
+      }
+      
+      await Promise.all([loadStats(), loadLogs(page, filters), loadLockedStudents()]);
     } catch (error) {
       toast.error(error?.response?.data?.message || error.message || 'Failed to unlock student');
     }
@@ -332,6 +415,58 @@ export default function MalpracticePage() {
           </div>
         </div>
 
+        {lockedStudents.length > 0 && (
+          <div className={styles.lockedStudentsCard}>
+            <div className={styles.lockedStudentsHeader}>
+              <h2>Currently Locked Students</h2>
+              <span>{lockedStudents.length} student(s) locked</span>
+            </div>
+            <div className={styles.lockedStudentsList}>
+              {lockedStudents.map((student) => (
+                <div key={student._id} className={styles.lockedStudentItem}>
+                  <div className={styles.lockedStudentInfo}>
+                    <strong>{student.name}</strong>
+                    <span>{student.email}</span>
+                    <div className={styles.lockDetails}>
+                      <span className={styles.lockType}>{student.activeSessionType}</span>
+                      <span>•</span>
+                      <span>{student.lockReason || 'Unknown reason'}</span>
+                      <span>•</span>
+                      <span>Unlocks in: {student.timeRemainingFormatted}</span>
+                    </div>
+                  </div>
+                  <div className={styles.lockedStudentEvidence}>
+                    {student.lockReason?.includes('face_missing') ? (
+                      <div className={styles.noEvidenceMessage}>
+                        <span className={styles.lockReasonText}>{student.lockReason || 'Unknown reason'}</span>
+                      </div>
+                    ) : lockedStudentEvidence[student._id] ? (
+                      <img 
+                        src={lockedStudentEvidence[student._id]} 
+                        alt={`Evidence for ${student.name}`}
+                        className={styles.evidenceThumbnail}
+                      />
+                    ) : (
+                      <div className={styles.noEvidenceMessage}>
+                        <span>No image found</span>
+                        <span className={styles.lockReasonText}>Locked for: {student.lockReason || 'Unknown reason'}</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type='button'
+                    className={styles.unlockButton}
+                    onClick={() => handleUnlockStudent(student)}
+                  >
+                    <Unlock size={14} />
+                    Unlock
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className={styles.filtersCard}>
           <div className={styles.filtersRow}>
             <label className={styles.filterField}>
@@ -364,6 +499,7 @@ export default function MalpracticePage() {
                 type="date"
                 value={filters.from}
                 onChange={(event) => handleFilterChange('from', event.target.value)}
+                style={{ cursor: 'pointer', zIndex: 1 }}
               />
             </label>
 
@@ -373,6 +509,7 @@ export default function MalpracticePage() {
                 type="date"
                 value={filters.to}
                 onChange={(event) => handleFilterChange('to', event.target.value)}
+                style={{ cursor: 'pointer', zIndex: 1 }}
               />
             </label>
           </div>
@@ -407,11 +544,10 @@ export default function MalpracticePage() {
                 <thead>
                   <tr>
                     <th>Student</th>
-                    <th>Type</th>
                     <th>Risk</th>
                     <th>Time</th>
+                    <th>Lock Reason</th>
                     <th>Evidence</th>
-                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -423,13 +559,19 @@ export default function MalpracticePage() {
                           <span>{log.userId?.email || 'No email'}</span>
                         </div>
                       </td>
-                      <td>{TYPE_LABELS[log.violationType] || 'Monitoring Alert'}</td>
                       <td>
                         <span className={`${styles.riskBadge} ${styles[`risk${log.riskLevel}`] || ''}`}>
                           {log.riskLevel}
                         </span>
                       </td>
                       <td>{formatDateTime(log.createdAt)}</td>
+                      <td>
+                        {log.lockReason ? (
+                          <span className={styles.lockReasonText}>{log.lockReason}</span>
+                        ) : (
+                          <span className={styles.noAction}>-</span>
+                        )}
+                      </td>
                       <td>
                         {log.hasEvidence && log.latestEvidenceId ? (
                           <button
@@ -440,7 +582,7 @@ export default function MalpracticePage() {
                             {previewUrls[log._id] ? (
                               <img
                                 src={previewUrls[log._id]}
-                                alt={`${TYPE_LABELS[log.violationType] || 'Evidence'} thumbnail`}
+                                alt={`Evidence thumbnail`}
                                 className={styles.thumbnail}
                               />
                             ) : (
@@ -451,20 +593,6 @@ export default function MalpracticePage() {
                           </button>
                         ) : (
                           <span className={styles.noEvidence}>No image</span>
-                        )}
-                      </td>
-                      <td>
-                        {log.isCurrentlyLocked ? (
-                          <button
-                            type="button"
-                            className={styles.unlockButton}
-                            onClick={() => handleUnlock(log)}
-                          >
-                            <Unlock size={14} />
-                            Unlock
-                          </button>
-                        ) : (
-                          <span className={styles.noAction}>Unlocked</span>
                         )}
                       </td>
                     </tr>

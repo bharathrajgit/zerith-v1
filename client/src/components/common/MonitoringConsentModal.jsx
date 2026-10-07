@@ -37,6 +37,7 @@ export default function MonitoringConsentModal({
   warningLimit = 3,
   onAccept,
   onDecline,
+  onFallback,
 }) {
   if (!open) return null;
 
@@ -96,21 +97,6 @@ export default function MonitoringConsentModal({
             }}
           >
             {loading ? 'Requesting Camera...' : 'Allow Camera and Continue'}
-          </button>
-          <button
-            onClick={onDecline}
-            disabled={loading}
-            style={{
-              borderRadius: 14,
-              padding: '0.9rem 1.15rem',
-              background: 'transparent',
-              color: '#cbd5e1',
-              fontWeight: 700,
-              border: '1px solid rgba(71, 85, 105, 0.95)',
-              cursor: loading ? 'not-allowed' : 'pointer',
-            }}
-          >
-            Cancel
           </button>
         </div>
       </div>

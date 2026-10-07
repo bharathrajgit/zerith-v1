@@ -22,6 +22,8 @@ export default function CodingHubPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 8;
 
   useEffect(() => {
     const fetchProblems = async () => {
@@ -43,7 +45,7 @@ export default function CodingHubPage() {
   }, []);
 
   const filteredProblems = useMemo(() => {
-    return problems.filter((problem) => {
+    let filtered = problems.filter((problem) => {
       const matchesSearch = !search.trim()
         || `${problem.title} ${problem.topicTitle} ${problem.moduleTitle}`
           .toLowerCase()
@@ -55,7 +57,25 @@ export default function CodingHubPage() {
       if (filter === 'Locked') return problem.state === 'locked';
       return true;
     });
+
+    // Sort: unlocked first, then solved, then locked
+    const stateOrder = { unlocked: 0, solved: 1, locked: 2 };
+    filtered.sort((a, b) => stateOrder[a.state] - stateOrder[b.state]);
+
+    return filtered;
   }, [filter, problems, search]);
+
+  const paginatedProblems = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return filteredProblems.slice(startIndex, endIndex);
+  }, [filteredProblems, currentPage, itemsPerPage]);
+
+  const totalPages = Math.ceil(filteredProblems.length / itemsPerPage);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, search]);
 
   const solvedCount = problems.filter((problem) => problem.state === 'solved').length;
   const unlockedCount = problems.filter((problem) => problem.state === 'unlocked').length;
@@ -137,8 +157,9 @@ export default function CodingHubPage() {
         ) : error ? (
           <div style={{ color: '#fca5a5' }}>{error}</div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '1rem' }}>
-            {filteredProblems.map((problem) => (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '1rem' }}>
+              {paginatedProblems.map((problem) => (
               <article
                 key={problem._id}
                 style={{
@@ -185,7 +206,8 @@ export default function CodingHubPage() {
                 </div>
 
                 <button
-                  onClick={() => navigate(`/coding/${problem._id}`)}
+                  onClick={() => problem.state !== 'locked' && navigate(`/coding/${problem._id}`)}
+                  disabled={problem.state === 'locked'}
                   style={{
                     marginTop: 'auto',
                     width: '100%',
@@ -197,15 +219,73 @@ export default function CodingHubPage() {
                       : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
                     color: '#fff',
                     fontWeight: 700,
-                    cursor: 'pointer',
-                    opacity: problem.state === 'locked' ? 0.85 : 1,
+                    cursor: problem.state === 'locked' ? 'not-allowed' : 'pointer',
+                    opacity: problem.state === 'locked' ? 0.6 : 1,
                   }}
                 >
-                  {problem.state === 'locked' ? 'View Lock Reason' : problem.solved ? 'Open Solved Problem' : 'Solve Problem'}
+                  {problem.state === 'locked' ? 'Locked' : problem.solved ? 'Open Solved Problem' : 'Solve Problem'}
                 </button>
               </article>
             ))}
           </div>
+
+          {filteredProblems.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginTop: '2rem', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                style={{
+                  padding: '0.6rem 1rem',
+                  borderRadius: 10,
+                  border: '1px solid rgba(99,102,241,0.3)',
+                  background: currentPage === 1 ? 'rgba(15,23,42,0.5)' : 'rgba(99,102,241,0.15)',
+                  color: currentPage === 1 ? '#64748b' : '#e2e8f0',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                }}
+              >
+                Previous
+              </button>
+
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+                <button
+                  key={page}
+                  onClick={() => setCurrentPage(page)}
+                  style={{
+                    padding: '0.6rem 1rem',
+                    borderRadius: 10,
+                    border: currentPage === page ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.2)',
+                    background: currentPage === page ? 'rgba(99,102,241,0.25)' : 'rgba(15,23,42,0.5)',
+                    color: currentPage === page ? '#a5b4fc' : '#94a3b8',
+                    cursor: 'pointer',
+                    fontWeight: currentPage === page ? 700 : 600,
+                    fontSize: '0.9rem',
+                  }}
+                >
+                  {page}
+                </button>
+              ))}
+
+              <button
+                onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+                style={{
+                  padding: '0.6rem 1rem',
+                  borderRadius: 10,
+                  border: '1px solid rgba(99,102,241,0.3)',
+                  background: currentPage === totalPages ? 'rgba(15,23,42,0.5)' : 'rgba(99,102,241,0.15)',
+                  color: currentPage === totalPages ? '#64748b' : '#e2e8f0',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                }}
+              >
+                Next
+              </button>
+            </div>
+          )}
+          </>
         )}
       </div>
     </StudentLayout>

@@ -415,3 +415,132 @@
     min-width: 120px;
   }
 }
+
+.lockedStudentsCard {
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.08), rgba(239, 68, 68, 0.04));
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: 18px;
+  padding: 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+.lockedStudentsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.lockedStudentsHeader h2 {
+  margin: 0;
+  color: #f1f5f9;
+  font-size: 1.1rem;
+}
+
+.lockedStudentsHeader span {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.lockedStudentsList {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.lockedStudentItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(17, 17, 32, 0.98);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.lockedStudentInfo {
+  display: grid;
+  gap: 0.35rem;
+  flex: 1;
+}
+
+.lockedStudentInfo strong {
+  color: #f1f5f9;
+  font-size: 0.95rem;
+}
+
+.lockedStudentInfo > span {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.lockDetails {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #64748b;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.lockType {
+  color: #ef4444;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.lockedStudentEvidence {
+  width: 140px;
+  height: 80px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #1e1e35;
+  background: #0a0a0f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.evidenceThumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.noEvidenceMessage {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  line-height: 1.3;
+}
+
+.lockReasonText {
+  color: #f87171;
+  font-size: 0.75rem;
+  font-weight: 600;
+  word-wrap: break-word;
+}
+
+.lockReasonText {
+  color: #f87171;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.filterField input[type='date'] {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+.filterField input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}

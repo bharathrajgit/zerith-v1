@@ -22,6 +22,7 @@ __pycache__/
 *.pyc
 venv/
 ml-service/venv/
+ml-training/.kaggle/kaggle.json
 
 # Build output
 client/dist/

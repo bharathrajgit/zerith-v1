@@ -7,6 +7,7 @@ const {
   getInstitutionMalpracticeStats,
   reportViolation,
   unlockStudent,
+  getLockedStudents,
 } = require('../controllers/malpracticeController');
 
 const studentRouter = express.Router();
@@ -18,6 +19,7 @@ const institutionRouter = express.Router();
 institutionRouter.use(protectInstitution);
 institutionRouter.get('/logs', getInstitutionMalpracticeLogs);
 institutionRouter.get('/stats', getInstitutionMalpracticeStats);
+institutionRouter.get('/locked-students', getLockedStudents);
 institutionRouter.post('/unlock', unlockStudent);
 
 module.exports = {

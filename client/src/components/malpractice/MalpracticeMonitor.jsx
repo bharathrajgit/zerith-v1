@@ -403,6 +403,8 @@ const getViolationDescription = (type, detectedObject = '') => {
   switch (type) {
     case 'gaze_away':
       return 'You looked away from the screen or your face was not visible.';
+    case 'face_missing':
+      return 'Your face was missing from the camera frame repeatedly.';
     case 'multiple_faces':
       return 'Multiple faces were detected in the camera frame.';
     case 'mobile_detected':
@@ -417,6 +419,27 @@ const getViolationDescription = (type, detectedObject = '') => {
       return 'Suspicious behavior was detected during this session.';
     default:
       return 'Suspicious behavior was detected.';
+  }
+};
+
+const getViolationIcon = (type) => {
+  switch (type) {
+    case 'gaze_away':
+      return '👁️';
+    case 'face_missing':
+      return '👤';
+    case 'multiple_faces':
+      return '👥';
+    case 'mobile_detected':
+      return '📱';
+    case 'tab_switch':
+      return '🔄';
+    case 'copy_attempt':
+      return '📋';
+    case 'behavioral_anomaly':
+      return '⚠️';
+    default:
+      return '⚠️';
   }
 };
 
@@ -465,6 +488,7 @@ export default function MalpracticeMonitor({
   assessmentId = '',
   topicId = '',
   paused = false,
+  active = false,
   onLocked,
   onWarning,
   onUnlock,
@@ -795,19 +819,19 @@ export default function MalpracticeMonitor({
     // Show warning UI immediately
     emitWarningLocally(type, warningNumber, confidence);
 
-    // Check if this warning count reaches the lock threshold
-    const limit = getWarningLimit(type) || 3;
-    if (warningNumber >= limit) {
-      log('triggerWarning: threshold reached,', type, warningNumber, '>=', limit, '- applying lock');
+    // Check if total combined warnings reach the lock threshold
+    const totalWarnings = getWarningCount();
+    if (totalWarnings >= 3) {
+      log('triggerWarning: threshold reached, total warnings:', totalWarnings, '>= 3 - applying lock');
       
       const lockPayload = {
         isLocked: true,
         lockReason: type,
         warningNumber,
         riskLevel: 'HIGH',
-        lockedUntil: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-        timeRemainingMs: 2 * 60 * 60 * 1000,
-        timeRemainingFormatted: '2h 0m 0s',
+        lockedUntil: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+        timeRemainingMs: 3 * 60 * 60 * 1000,
+        timeRemainingFormatted: '3h 0m 0s',
         lockCount: lockCount + 1,
         sessionType,
       };
@@ -1121,7 +1145,10 @@ export default function MalpracticeMonitor({
       if (!isMountedRef.current) return;
       setStatus('active');
       startGracePeriod(MOUNT_GRACE_MS);
-      startDetectionLoop();
+      // Only start detection if active prop is true
+      if (active) {
+        startDetectionLoop();
+      }
     };
 
     init();
@@ -1145,12 +1172,23 @@ export default function MalpracticeMonitor({
       lookingAwayFramesRef.current = 0;
     } else {
       startGracePeriod(TRANSITION_GRACE_MS);
-      if (faceEnabledRef.current || deviceEnabledRef.current) {
+      if (active && (faceEnabledRef.current || deviceEnabledRef.current)) {
         startDetectionLoop();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paused]);
+  }, [paused, active]);
+
+  // Active prop watcher - start/stop detection based on active state
+  useEffect(() => {
+    if (isLockedRef.current) return;
+    if (active && !paused && (faceEnabledRef.current || deviceEnabledRef.current)) {
+      startDetectionLoop();
+    } else if (!active) {
+      stopDetectionLoop();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   // Tab switch detection - uses centralized context
   useEffect(() => {
@@ -1301,7 +1339,7 @@ export default function MalpracticeMonitor({
     <>
       {warningBanner ? (
         <div className={`${styles.warningBanner} ${styles[`warning${warningBanner.visualLevel}`]}`}>
-          <div className={styles.warningIcon}>!</div>
+          <div className={styles.warningIcon}>{getViolationIcon(warningBanner.type)}</div>
           <div className={styles.warningBody}>
             <div className={styles.warningText}>
               Warning {warningBanner.count}/{warningBanner.limit}: {warningBanner.description}

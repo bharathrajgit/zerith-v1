@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
@@ -22,8 +22,23 @@ import {
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import usePracticeMonitoring from '../../hooks/usePracticeMonitoring';
-import MalpracticeMonitor, { LockScreen } from '../../components/malpractice/MalpracticeMonitor';
+import { MONITORING_START_TIMEOUT_MS } from '../../hooks/usePracticeMonitoring.helpers';
+import { LockScreen } from '../../components/malpractice/MalpracticeMonitor';
+import MonitoringConsentModal from '../../components/common/MonitoringConsentModal';
+import CameraMonitoringLayer from '../../components/common/CameraMonitoringLayer';
+import { getLatestMonitoringWarningMessage } from '../../utils/monitoringMessages';
 import styles from './DiagnosticPage.module.css';
+
+
+const formatDuration = (lockedUntil) => {
+  const remainingMs = Math.max(0, new Date(lockedUntil || 0).getTime() - Date.now());
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}h ${minutes}m ${seconds}s`;
+};
+
 
 const playBeep = () => {
   try {
@@ -271,38 +286,55 @@ export default function DiagnosticPage() {
   const codeEditorRef = useRef(null);
   const lineNumbersRef = useRef(null);
   const completedSummaryLoadedRef = useRef(false);
+  const finishMonitoringCalledRef = useRef(false);
 
-  const handleMonitoringStatusChange = useMemo(
-    () => (nextState) => {
-      if (nextState.finalFlagged) {
-        toast.error(
-          `Monitoring flag raised for this diagnostic. Warning ${nextState.warningCount}/${nextState.warningLimit}.`
-        );
-        return;
-      }
+  const handleMonitoringStatusChange = useCallback((nextState) => {
+    const warningMessage = getLatestMonitoringWarningMessage(nextState, 'Monitoring warning detected.');
 
-      if ((nextState.warningCount || 0) > 0) {
-        toast(`Warning ${nextState.warningCount}/${nextState.warningLimit}: do not switch tabs during the diagnostic.`, {
-          icon: '!',
-        });
-      }
-    },
-    []
-  );
+    if (nextState?.isLocked) {
+      setIsLockedByMalpractice(true);
+      setLockInfo(nextState);
+      toast.error(warningMessage);
+      return;
+    }
+
+    if (nextState?.finalFlagged) {
+      toast.error(`${warningMessage} Warning ${nextState.warningCount}/${nextState.warningLimit}.`);
+      return;
+    }
+
+    if ((nextState?.warningCount || 0) > 0) {
+      toast(`${warningMessage} Warning ${nextState.warningCount}/${nextState.warningLimit}.`, {
+        icon: '!',
+      });
+    }
+  }, []);
 
   const {
     browserMetrics,
+    browserEventTrackingActive,
     captureVideoRef,
     consentModal,
+    error: monitoringError,
     finishMonitoring,
-    isMobile,
+    isMonitoring,
+    latestErrorRef,
+    monitoringMode,
+    monitoringReadiness,
+    monitoringStage,
     sessionId,
+    sessionIdRef,
     sessionState,
     startMonitoring,
     stream,
     trackBrowserEvent,
+    visionState,
+    faceMissingCountdown,
+    waitForMonitoringReady,
   } = usePracticeMonitoring({
     sessionType: 'diagnostic',
+    allowBrowserOnlyFallback: true,
+    analysisEnabled: screen === 'question' || screen === 'coding' || screen === 'generating',
     institutionLinked: !!user?.institutionId,
     sessionLabel: 'diagnostic test session',
     onStatusChange: handleMonitoringStatusChange,
@@ -321,6 +353,7 @@ export default function DiagnosticPage() {
         }
       } catch (error) {
         console.error('Lock check failed:', error);
+        toast.error('Failed to verify malpractice lock status. Please try again.');
       } finally {
         if (isMounted) {
           setLockCheckLoading(false);
@@ -328,12 +361,24 @@ export default function DiagnosticPage() {
       }
     };
 
+    // Initial lock check on mount
     checkLock();
 
+    // Re-check lock when page becomes visible (user returns from another tab)
+    const handleVisibilityChange = () => {
+      if (!document.hidden && isMounted && !isLockedByMalpractice) {
+        setLockCheckLoading(true);
+        checkLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       isMounted = false;
     };
-  }, []);
+  }, [isLockedByMalpractice]);
 
   const analyzingMessages = [
     'Analyzing your combined MCQ and coding performance',
@@ -544,7 +589,12 @@ export default function DiagnosticPage() {
     toast.success(`Formatted ${selectedProblem.title}`);
   };
 
-  const loadNextQuestion = async (token, fallbackTarget = totalQuestions, fallbackTime = timePerQuestion) => {
+  const loadNextQuestion = async (
+    token,
+    fallbackTarget = totalQuestions,
+    fallbackTime = timePerQuestion,
+    requestTimeout = MONITORING_START_TIMEOUT_MS
+  ) => {
     try {
       setGeneratingState(
         createGeneratingState(
@@ -554,7 +604,7 @@ export default function DiagnosticPage() {
       );
       setScreen('generating');
 
-      const { data } = await api.post('/diagnostic/question', { token });
+      const { data } = await api.post('/diagnostic/question', { token }, { timeout: requestTimeout });
       if (!data.success || !data.data) {
         throw new Error(data.message || 'Failed to load question');
       }
@@ -568,7 +618,9 @@ export default function DiagnosticPage() {
       beepPlayed.current = false;
       setScreen('question');
     } catch (error) {
-      const message = error.response?.data?.message || error.message || 'Could not load question.';
+      const message = error.code === 'ECONNABORTED'
+        ? 'Loading the next diagnostic question is taking too long. Please try again.'
+        : error.response?.data?.message || error.message || 'Could not load question.';
       setSessionError(message);
       setScreen('error');
       toast.error(message);
@@ -637,11 +689,49 @@ export default function DiagnosticPage() {
   };
 
   const startDiagnostic = async () => {
+    if (isSubmitting) {
+      return;
+    }
+
     setIsSubmitting(true);
     setSessionError('');
 
     try {
-      const { data } = await api.post('/diagnostic/start');
+      const monitoringApproved = await startMonitoring();
+      if (!monitoringApproved) {
+        const message = latestErrorRef.current || monitoringError || 'Monitoring could not be started. Please try again.';
+        setSessionError(message);
+        toast.error(message);
+        return;
+      }
+
+      const monitoringReady = await waitForMonitoringReady();
+      if (!monitoringReady) {
+        throw new Error('Camera monitoring did not finish starting. Please try again.');
+      }
+
+      const startedMonitoringSessionId = (
+        monitoringApproved && typeof monitoringApproved === 'object'
+          ? monitoringApproved.monitoringSessionId
+          : null
+      );
+      const activeMonitoringSessionId = (
+        startedMonitoringSessionId
+        || sessionIdRef.current
+        || sessionId
+        || sessionState?.monitoringSessionId
+      );
+      if (!activeMonitoringSessionId) {
+        throw new Error('Camera monitoring did not initialize correctly. Please try again.');
+      }
+
+      const { data } = await api.post(
+        '/diagnostic/start',
+        {
+          monitoringSessionId: activeMonitoringSessionId,
+        },
+        { timeout: MONITORING_START_TIMEOUT_MS }
+      );
       if (!data.success || !data.data?.token) {
         throw new Error(data.message || 'Could not start diagnostic');
       }
@@ -657,12 +747,35 @@ export default function DiagnosticPage() {
       setTotalQuestions(nextTotalQuestions);
       setTimePerQuestion(nextTimePerQuestion);
 
-      await loadNextQuestion(data.data.token, nextTotalQuestions, nextTimePerQuestion);
+      await loadNextQuestion(
+        data.data.token,
+        nextTotalQuestions,
+        nextTimePerQuestion,
+        MONITORING_START_TIMEOUT_MS
+      );
     } catch (error) {
-      const message = error.response?.data?.message || error.message || 'Could not start diagnostic.';
+      const message = error.code === 'ECONNABORTED'
+        ? 'Diagnostic startup is taking longer than expected. Please try again.'
+        : error.response?.data?.message || error.message || 'Could not start diagnostic.';
+      const lockPayload = error.response?.data?.data;
+
+      if (error.response?.status === 423 && lockPayload?.isLocked) {
+        setIsLockedByMalpractice(true);
+        setLockInfo(lockPayload);
+        setScreen('welcome');
+        return;
+      }
+
+      setSessionToken('');
       setSessionError(message);
       setScreen('welcome');
       toast.error(message);
+
+      // If startup fails after monitoring session creation, close it so
+      // the next attempt starts from a clean live-monitoring session.
+      if (sessionIdRef.current || sessionId || sessionState?.monitoringSessionId) {
+        finishMonitoring({}, { keepalive: true }).catch(() => null);
+      }
 
       if (error.response?.status === 400 && message.toLowerCase().includes('already completed')) {
         navigate('/dashboard', { replace: true });
@@ -764,6 +877,8 @@ export default function DiagnosticPage() {
     try {
       const { data } = await api.post('/diagnostic/coding/complete', {
         sessionToken,
+        sessionData: browserMetrics,
+        monitoringSessionId: sessionIdRef.current || sessionId || undefined,
       });
 
       if (!data.success || !data.data) {
@@ -797,13 +912,24 @@ export default function DiagnosticPage() {
   };
 
   const restartLanding = () => {
+    sessionDataRef.current = { changedAnswers: 0 };
     setScreen('welcome');
     setSessionError('');
+    setSessionToken('');
+    setQuestionNumber(0);
+    setMinQuestions(30);
+    setMaxQuestions(50);
+    setTotalQuestions(30);
+    setTimePerQuestion(45);
+    setTimeLeft(45);
     setSelectedOption(null);
     setQuestionResult(null);
     setCurrentQuestion(null);
+    setMcqSummary(null);
     setCodingProblems([]);
     setSelectedProblemId('');
+    setAnalyzingStep(0);
+    setCodingClock(Date.now());
     setResults(null);
   };
 
@@ -936,11 +1062,9 @@ export default function DiagnosticPage() {
   }, [screen, selectedProblem, codingProblems]);
 
   useEffect(() => {
-    return undefined;
-
     let copyThrottleTimer;
 
-    const shouldMonitor = () => screen === 'question' || screen === 'coding';
+    const shouldMonitor = () => browserEventTrackingActive && (screen === 'question' || screen === 'coding' || screen === 'generating');
 
     const handleVisibility = () => {
       if (document.hidden && shouldMonitor()) {
@@ -977,11 +1101,35 @@ export default function DiagnosticPage() {
         window.clearTimeout(copyThrottleTimer);
       }
     };
-  }, [screen, trackBrowserEvent]);
+  }, [browserEventTrackingActive, screen, trackBrowserEvent]);
 
-  useEffect(() => () => {
-    finishMonitoring({}, { keepalive: true });
-  }, [finishMonitoring]);
+  // Note: Monitoring cleanup is handled explicitly in specific scenarios (results screen, lock state, error handling)
+  // to avoid premature session termination during normal operation.
+
+  useEffect(() => {
+    if (!sessionState?.isLocked) {
+      finishMonitoringCalledRef.current = false;
+      return;
+    }
+
+    if (finishMonitoringCalledRef.current) return;
+
+    setIsLockedByMalpractice(true);
+    setLockInfo((current) => current || sessionState);
+    finishMonitoringCalledRef.current = true;
+    finishMonitoring({}, { keepalive: true }).catch(() => null);
+  }, [finishMonitoring, sessionState]);
+
+  useEffect(() => {
+    if (screen !== 'results' || !sessionId || !isMonitoring) return;
+
+    finishMonitoring(
+      {
+        browserMetrics,
+      },
+      { keepalive: false }
+    ).catch(() => null);
+  }, [browserMetrics, finishMonitoring, isMonitoring, screen, sessionId]);
 
   useEffect(() => {
     if (screen !== 'analyzing') return undefined;
@@ -1003,6 +1151,82 @@ export default function DiagnosticPage() {
 
   const resultBadge = results ? getAchievementBadge(results.level) : null;
   const breakdownRows = Array.isArray(results?.breakdown) ? results.breakdown : [];
+  const monitoringWarningCount = Number(sessionState?.warningCount || 0);
+  const monitoringWarningLimit = Number(sessionState?.warningLimit || 3);
+  const monitoringRiskLevel = sessionState?.riskLevel || 'NONE';
+  const latestMonitoringMessage = getLatestMonitoringWarningMessage(sessionState);
+  const faceMissingNotice = faceMissingCountdown > 0
+    ? `⚠️ Face missing! Return within ${faceMissingCountdown} seconds or test will be locked.`
+    : '';
+  const limitedCameraMonitoring = isMonitoring
+    && monitoringMode !== 'browser-only'
+    && (monitoringReadiness?.limitedDetection || !monitoringReadiness?.fullModelReady);
+  const monitoringBannerClassName =
+    sessionState?.isLocked || sessionState?.finalFlagged || monitoringRiskLevel === 'HIGH'
+      ? `${styles.feedback} ${styles.feedbackBad}`
+      : monitoringWarningCount > 0 || monitoringRiskLevel === 'MEDIUM'
+      ? styles.feedback
+      : `${styles.feedback} ${styles.feedbackGood}`;
+  const monitoringFallbackText = sessionState?.finalFlagged
+    ? 'Monitoring has flagged this diagnostic for review.'
+    : monitoringMode === 'browser-only' && isMonitoring
+    ? 'Browser-only malpractice monitoring is active for this diagnostic.'
+    : monitoringStage === 'warming_up'
+    ? 'Camera monitoring is warming up for this diagnostic.'
+    : monitoringStage === 'checking_readiness'
+      || monitoringStage === 'requesting_camera'
+      || monitoringStage === 'awaiting_video'
+      || monitoringStage === 'starting_session'
+    ? 'Starting camera monitoring for this diagnostic.'
+    : monitoringStage === 'unavailable' || monitoringStage === 'error'
+    ? 'Camera monitoring is unavailable for this diagnostic.'
+    : limitedCameraMonitoring
+    ? 'Limited camera monitoring is active for this diagnostic.'
+    : isMonitoring
+    ? 'Camera monitoring is active for this diagnostic.'
+    : 'Camera monitoring starts when you begin the diagnostic.';
+  const monitoringStatusText = sessionState?.isLocked
+    ? `Diagnostic locked due to: ${sessionState?.lockReason || 'repeated malpractice warnings'}. Unlocks in: ${formatDuration(sessionState?.lockedUntil)}`
+    : latestMonitoringMessage
+    ? `${latestMonitoringMessage}${faceMissingNotice ? ` ${faceMissingNotice}` : ''}`
+    : faceMissingNotice || monitoringFallbackText;
+  const monitoringActivityText = monitoringMode === 'browser-only'
+    ? 'Browser-only malpractice monitoring is active for this diagnostic.'
+    : limitedCameraMonitoring
+    ? 'Limited camera monitoring is active for this diagnostic.'
+    : isMonitoring
+    ? 'Live malpractice monitoring is active for this diagnostic.'
+    : monitoringStage === 'warming_up'
+    ? 'Camera preview is warming up for this diagnostic.'
+    : 'Camera monitoring is starting for this diagnostic.';
+  const monitoringBannerWidthClassName =
+    screen === 'welcome' || screen === 'question' || screen === 'coding'
+      ? styles.monitoringBannerWide
+      : styles.monitoringBannerCompact;
+  const monitoringBanner = (
+    <div className={`${monitoringBannerClassName} ${monitoringBannerWidthClassName}`}>
+      <AlertCircle size={16} />
+      <span>
+        {monitoringStatusText}
+        {' '}Warnings {monitoringWarningCount}/{monitoringWarningLimit}. Risk {monitoringRiskLevel}.
+      </span>
+    </div>
+  );
+  const monitoringUi = (stream || monitoringStage === 'requesting_camera' || monitoringStage === 'awaiting_video' || monitoringStage === 'starting_session' || monitoringStage === 'warming_up') ? (
+    <CameraMonitoringLayer
+      stream={stream}
+      captureVideoRef={captureVideoRef}
+      detections={visionState?.detections}
+      frameSize={visionState?.frameSize}
+      width={190}
+      height={140}
+    />
+  ) : null;
+
+  useEffect(() => {
+    console.log('[DiagnosticPage] Monitoring stage:', monitoringStage, 'Stream:', !!stream, 'MonitoringUi rendered:', !!monitoringUi);
+  }, [monitoringStage, stream, monitoringUi]);
+  const monitoringModal = <MonitoringConsentModal {...consentModal} />;
 
   if (lockCheckLoading) {
     return (
@@ -1027,13 +1251,7 @@ export default function DiagnosticPage() {
           // diagnostic start page (previous progress is NOT restored).
           setIsLockedByMalpractice(false);
           setLockInfo(null);
-          setScreen('welcome');
-          setSessionToken('');
-          setCurrentQuestion(null);
-          setSelectedOption(null);
-          setQuestionResult(null);
-          setCodingProblems([]);
-          setResults(null);
+          restartLanding();
         }}
       />
     );
@@ -1042,6 +1260,7 @@ export default function DiagnosticPage() {
   return (
     <div className={styles.page}>
       <div className={styles.shell}>
+        {screen !== 'results' ? monitoringBanner : null}
         {screen === 'welcome' && (
           <section className={styles.card}>
             <div className={styles.hero}>
@@ -1142,7 +1361,7 @@ export default function DiagnosticPage() {
 
             <div className={styles.feedback}>
               <AlertCircle size={16} />
-              <span>Live malpractice monitoring is active for this diagnostic.</span>
+              <span>{monitoringActivityText}</span>
             </div>
 
             <div className={styles.questionBlock}>
@@ -1217,7 +1436,7 @@ export default function DiagnosticPage() {
 
             <div className={styles.feedback}>
               <AlertCircle size={16} />
-              <span>Live malpractice monitoring is active for this diagnostic.</span>
+              <span>{monitoringActivityText}</span>
             </div>
 
             <div className={styles.problemTabs}>
@@ -1635,38 +1854,8 @@ export default function DiagnosticPage() {
           </section>
         )}
       </div>
-
-      {/*
-        MalpracticeMonitor must stay mounted from the moment the test starts
-        to the moment it ends. We NEVER unmount it between questions.
-        - paused=true during 'generating' and 'analyzing' halts detection
-          intervals but keeps the camera stream alive.
-        - sessionType='diagnostic' ensures only the diagnosticLock field is
-          used on the backend.
-      */}
-      {(screen !== 'welcome' && screen !== 'results' && !lockCheckLoading) ? (
-        <MalpracticeMonitor
-          sessionType="diagnostic"
-          assessmentId={sessionToken}
-          paused={screen === 'generating' || screen === 'analyzing'}
-          onLocked={(data) => {
-            setIsLockedByMalpractice(true);
-            setLockInfo(data);
-          }}
-          onUnlock={() => {
-            setIsLockedByMalpractice(false);
-            setLockInfo(null);
-            setScreen('welcome');
-            setSessionToken('');
-            setCurrentQuestion(null);
-            setSelectedOption(null);
-            setQuestionResult(null);
-            setCodingProblems([]);
-            setResults(null);
-          }}
-          onWarning={() => {}}
-        />
-      ) : null}
+      {monitoringUi}
+      {monitoringModal}
     </div>
   );
 }

@@ -16,9 +16,26 @@ export default function StudentLogin() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      navigate('/dashboard');
+      navigate('/dashboard', { replace: true });
     }
   }, [isAuthenticated, navigate]);
+
+  useEffect(() => {
+    const authError = sessionStorage.getItem('lastAuthError');
+    if (!authError) return;
+
+    try {
+      const errorDetails = JSON.parse(authError);
+      toast.error(
+        errorDetails.message || 'Your session expired. Please sign in again.',
+        { duration: 5000 }
+      );
+    } catch {
+      toast.error('Your session expired. Please sign in again.', { duration: 5000 });
+    } finally {
+      sessionStorage.removeItem('lastAuthError');
+    }
+  }, []);
 
   /* ── Validation ───────────────────────────────── */
   const validate = () => {

@@ -5,10 +5,11 @@ const MonitoringSession = require('../models/MonitoringSession');
 const {
   generateRoadmap,
 } = require('../services/roadmapGenerator');
+const mlService = require('../services/mlService');
 const {
   canonicalizeLevel,
   getCheatingRisk,
-} = require('../services/mlService');
+} = mlService;
 const { logActivity } = require('../services/streakService');
 const antiMalpractice = require('../services/antiMalpractice');
 const { finalizeSession } = require('../services/monitoringService');
@@ -17,6 +18,7 @@ const {
   MAX_QUESTIONS,
   QUESTION_TIME_LIMIT,
   SESSION_EXPIRY_MS,
+  DIAGNOSTIC_POOL_INCOMPLETE,
   buildResults,
   service: adaptiveDiagnosticService,
 } = require('../services/adaptiveDiagnosticService');
@@ -42,6 +44,7 @@ const PLAN_BY_LEVEL = {
   Intermediate: '60-day',
   'Placement-Ready': '30-day',
 };
+const DIAGNOSTIC_LOCK_RESPONSE_STATUS = 423;
 
 const average = (values = []) => {
   if (!values.length) return 0;
@@ -182,6 +185,101 @@ const getSeededCodingProblems = (sessionToken, userId) => {
 };
 
 const getSessionToken = (req) => req.body?.sessionToken || req.body?.token;
+
+const formatLockDuration = (ms) => {
+  const safeSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  return `${hours}h ${minutes}m ${seconds}s`;
+};
+
+const buildDiagnosticLockState = (user, now = Date.now()) => {
+  const lock = user?.diagnosticLock || {};
+  const lockedUntilTime = lock.lockedUntil ? new Date(lock.lockedUntil).getTime() : 0;
+  const isLocked = Boolean(lock.isLocked && lockedUntilTime > now);
+  const timeRemainingMs = isLocked ? Math.max(0, lockedUntilTime - now) : 0;
+
+  return {
+    isLocked,
+    lockedUntil: isLocked ? lock.lockedUntil : null,
+    timeRemainingMs,
+    timeRemainingFormatted: isLocked ? formatLockDuration(timeRemainingMs) : '0h 0m 0s',
+    lockReason: isLocked ? (lock.lockReason || '') : '',
+    lockCount: Number(lock.lockCount || 0),
+    sessionType: 'diagnostic',
+  };
+};
+
+const clearExpiredDiagnosticLock = async (user, now = Date.now()) => {
+  const lockState = buildDiagnosticLockState(user, now);
+  if (lockState.isLocked || !user?.diagnosticLock?.isLocked) {
+    return lockState;
+  }
+
+  user.diagnosticLock = {
+    isLocked: false,
+    lockedUntil: null,
+    lockReason: '',
+    lockCount: Number(user?.diagnosticLock?.lockCount || 0),
+  };
+  await user.save();
+
+  return buildDiagnosticLockState(user, now);
+};
+
+const respondWithDiagnosticLock = (res, lockState) =>
+  res.status(DIAGNOSTIC_LOCK_RESPONSE_STATUS).json({
+    success: false,
+    message: 'Diagnostic access is locked because the malpractice warning limit was reached.',
+    data: lockState,
+  });
+
+const enforceDiagnosticUnlocked = async (userId, res) => {
+  const user = await User.findById(userId).select('diagnosticLock');
+  if (!user) {
+    res.status(404).json({ success: false, message: 'User not found' });
+    return null;
+  }
+
+  const lockState = await clearExpiredDiagnosticLock(user);
+  if (lockState.isLocked) {
+    respondWithDiagnosticLock(res, lockState);
+    return null;
+  }
+
+  return user;
+};
+
+const expireInProgressDiagnosticSessions = async (userId) => {
+  const activeDiagnosticSessions = await DiagnosticSession.find({
+    userId,
+    status: 'in_progress',
+  }).select('_id sessionToken');
+
+  if (!activeDiagnosticSessions.length) {
+    return;
+  }
+
+  await DiagnosticSession.updateMany(
+    {
+      _id: { $in: activeDiagnosticSessions.map((session) => session._id) },
+    },
+    {
+      $set: {
+        status: 'expired',
+        expiresAt: new Date(),
+      },
+    }
+  );
+
+  activeDiagnosticSessions.forEach((activeSession) => {
+    if (activeSession.sessionToken) {
+      adaptiveDiagnosticService.activeSessions.delete(activeSession.sessionToken);
+    }
+  });
+};
 
 const getSessionOrThrow = async ({ sessionToken, userId }) => {
   const session = await DiagnosticSession.findOne({
@@ -602,12 +700,14 @@ const finalizeMonitoringIfNeeded = async ({
   answers,
 }) => {
   let malpracticeSummary = null;
+  const resolvedMonitoringSessionId = monitoringSessionId || session?.monitoringSessionId;
 
-  if (monitoringSessionId) {
+  if (resolvedMonitoringSessionId) {
     try {
       const monitoringSession = await MonitoringSession.findOne({
-        _id: monitoringSessionId,
+        _id: resolvedMonitoringSessionId,
         userId: req.user._id,
+        sessionType: 'diagnostic',
       });
 
       if (monitoringSession) {
@@ -666,11 +766,30 @@ const finalizeMonitoringIfNeeded = async ({
     };
   }
 
+  // Optionally run proctor frame analysis if front-end provided an image
+  try {
+    if (sessionData && sessionData.proctorImage) {
+      const proctorPayload = {
+        imageData: sessionData.proctorImage,
+        metadata: {
+          userId: String(req.user._id),
+          sessionType: 'diagnostic',
+        },
+      };
+      const proctor = await require('../services/mlService').analyzeProctorFrame(proctorPayload);
+      malpracticeSummary = malpracticeSummary || {};
+      malpracticeSummary.proctor = proctor;
+    }
+  } catch (proErr) {
+    console.error('Diagnostic proctor analysis failed:', proErr?.message || proErr);
+  }
+
   return malpracticeSummary;
 };
 
 const startDiagnostic = async (req, res) => {
   try {
+    const { monitoringSessionId } = req.body || {};
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -687,6 +806,56 @@ const startDiagnostic = async (req, res) => {
       });
     }
 
+    const lockState = await clearExpiredDiagnosticLock(user);
+    if (lockState.isLocked) {
+      return respondWithDiagnosticLock(res, lockState);
+    }
+
+    const monitoringSessionQuery = {
+      userId: req.user._id,
+      sessionType: 'diagnostic',
+      status: 'active',
+    };
+
+    if (monitoringSessionId) {
+      monitoringSessionQuery._id = monitoringSessionId;
+    }
+
+    // Trust an already-created active monitoring session instead of re-checking
+    // ML readiness here. The readiness gate is enforced when the session starts,
+    // and re-checking it during diagnostic launch can block valid sessions if the
+    // health endpoint is temporarily slow or inconsistent.
+    let monitoringSessionLookup = MonitoringSession.findOne(monitoringSessionQuery);
+    if (!monitoringSessionId) {
+      monitoringSessionLookup = monitoringSessionLookup.sort({ startedAt: -1, createdAt: -1 });
+    }
+
+    const monitoringSession = await monitoringSessionLookup
+      .select('_id finalFlagged status sessionType');
+
+    if (!monitoringSession) {
+      return res.status(400).json({
+        success: false,
+        message: 'A live diagnostic monitoring session is required before the diagnostic can start.',
+      });
+    }
+
+    if (monitoringSession.finalFlagged) {
+      const refreshedUser = await User.findById(req.user._id).select('diagnosticLock');
+      const monitoringLockState = buildDiagnosticLockState(refreshedUser);
+
+      if (monitoringLockState.isLocked) {
+        return respondWithDiagnosticLock(res, monitoringLockState);
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: 'The current diagnostic monitoring session is already flagged and cannot be reused.',
+      });
+    }
+
+    await expireInProgressDiagnosticSessions(user._id);
+
     const sessionInfo = await adaptiveDiagnosticService.createSession(user._id.toString(), {
       institutionId: user.institutionId ? String(user.institutionId) : null,
       currentStreak: user.currentStreak || 0,
@@ -696,6 +865,7 @@ const startDiagnostic = async (req, res) => {
     await DiagnosticSession.create({
       userId: user._id,
       sessionToken: sessionInfo.token,
+      monitoringSessionId: monitoringSession._id,
       totalQuestions: sessionInfo.totalQuestions,
       minQuestions: sessionInfo.minQuestions,
       maxQuestions: sessionInfo.maxQuestions,
@@ -725,6 +895,15 @@ const startDiagnostic = async (req, res) => {
       message: 'Diagnostic session started',
     });
   } catch (error) {
+    if (error?.code === DIAGNOSTIC_POOL_INCOMPLETE) {
+      return res.status(503).json({
+        success: false,
+        code: DIAGNOSTIC_POOL_INCOMPLETE,
+        message: `Diagnostic question bank is incomplete for ${error?.meta?.topicKey || 'the requested topic'}.`,
+        data: error.meta || {},
+      });
+    }
+
     console.error('Diagnostic start error:', error);
     return res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
@@ -735,6 +914,11 @@ const getQuestion = async (req, res) => {
     const { token } = req.body;
     if (!token) {
       return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
     }
 
     const question = await adaptiveDiagnosticService.generateNextQuestion(token);
@@ -757,6 +941,11 @@ const submitAnswer = async (req, res) => {
     const { token, selectedOption, timeTaken } = req.body;
     if (!token || selectedOption === undefined) {
       return res.status(400).json({ success: false, message: 'Token and selectedOption are required' });
+    }
+
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
     }
 
     const result = await adaptiveDiagnosticService.submitAnswer(token, selectedOption, timeTaken || 0);
@@ -801,6 +990,11 @@ const completeDiagnostic = async (req, res) => {
     const token = getSessionToken(req);
     if (!token) {
       return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
     }
 
     const persistedSession = await getSessionOrThrow({
@@ -891,6 +1085,11 @@ const openCodingProblem = async (req, res) => {
       return res.status(400).json({ success: false, message: 'sessionToken and problemId are required' });
     }
 
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
+    }
+
     const session = await getSessionOrThrow({
       sessionToken,
       userId: req.user._id,
@@ -948,6 +1147,11 @@ const submitCodingProblem = async (req, res) => {
 
     if (String(language).toLowerCase() !== 'java') {
       return res.status(400).json({ success: false, message: 'Only Java submissions are supported for this diagnostic' });
+    }
+
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
     }
 
     const session = await getSessionOrThrow({
@@ -1117,6 +1321,11 @@ const completeCodingPhase = async (req, res) => {
       return res.status(400).json({ success: false, message: 'sessionToken is required' });
     }
 
+    const unlockedUser = await enforceDiagnosticUnlocked(req.user._id, res);
+    if (!unlockedUser) {
+      return;
+    }
+
     const session = await getSessionOrThrow({
       sessionToken,
       userId: req.user._id,
@@ -1272,4 +1481,7 @@ module.exports = {
   openCodingProblem,
   submitCodingProblem,
   completeCodingPhase,
+  __test__: {
+    finalizeMonitoringIfNeeded,
+  },
 };

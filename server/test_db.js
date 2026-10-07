@@ -1,70 +1,101 @@
 const mongoose = require('mongoose');
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
+const { MONGO_URI } = require('./config/env');
 const Module = require('./models/Module');
 const Topic = require('./models/Topic');
 const MCQ = require('./models/MCQ');
 const { TOPIC_MODULE_ORDERS } = require('./services/adaptiveDiagnosticService');
 
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/dsa-platform')
-  .then(async () => {
-    console.log('Connected to MongoDB - checking database state...');
+async function main() {
+  await mongoose.connect(MONGO_URI);
+  console.log('Connected to MongoDB - validating diagnostic database state...');
 
-    const topicCount = await Topic.countDocuments();
-    const mcqCount = await MCQ.countDocuments();
-
-    console.log(`\n=== DATABASE STATE ===`);
-    console.log(`Topics: ${topicCount}`);
-    console.log(`MCQs: ${mcqCount}`);
-
-    if (topicCount === 0) {
-      console.log('\nNo topics found. Database likely needs seeding.');
-      process.exit(1);
-    }
-
-    const requiredOrders = Object.values(TOPIC_MODULE_ORDERS);
-    const modules = await Module.find({ order: { $in: requiredOrders } })
-      .select('_id order title')
-      .sort({ order: 1 })
-      .lean();
-
-    console.log('\n=== DIAGNOSTIC MODULES ===');
-    modules.forEach((moduleDoc) => {
-      console.log(`${moduleDoc.order}: ${moduleDoc.title}`);
-    });
-
-    const arraysModule = modules.find((moduleDoc) => moduleDoc.order === TOPIC_MODULE_ORDERS.arrays);
-    if (arraysModule) {
-      console.log(`\nArrays module found: ${arraysModule.title} (ID: ${arraysModule._id})`);
-
-      const arraysTopics = await Topic.find({ moduleId: arraysModule._id })
-        .select('_id title order')
-        .sort({ order: 1 })
-        .lean();
-      const arraysMcqs = await MCQ.countDocuments({ moduleId: arraysModule._id, isActive: true });
-
-      console.log('Arrays topics:');
-      arraysTopics.forEach((topicDoc) => {
-        console.log(`  ${topicDoc.order}: ${topicDoc.title} (${topicDoc._id})`);
-      });
-      console.log(`Active MCQs for Arrays: ${arraysMcqs}`);
-
-      if (arraysMcqs === 0) {
-        console.log('No active MCQs found for the Arrays module.');
-      }
-    } else {
-      console.log('\nNo Arrays module found (order 3)');
-    }
-
-    console.log('\n=== EXPECTED BY ADAPTIVE SERVICE ===');
-    Object.entries(TOPIC_MODULE_ORDERS).forEach(([key, order]) => {
-      const hasModule = modules.some((moduleDoc) => moduleDoc.order === order);
-      console.log(`${key} (module ${order}): ${hasModule ? 'OK' : 'MISSING'}`);
-    });
-
-    process.exit(0);
+  const requiredOrders = Object.values(TOPIC_MODULE_ORDERS);
+  const modules = await Module.find({
+    order: { $in: requiredOrders },
+    isActive: true,
   })
-  .catch((err) => {
-    console.error('Database connection failed:', err.message);
-    process.exit(1);
+    .select('_id order title')
+    .sort({ order: 1 })
+    .lean();
+
+  const moduleIdByOrder = new Map(
+    modules.map((moduleDoc) => [moduleDoc.order, String(moduleDoc._id)])
+  );
+
+  const moduleIds = modules.map((moduleDoc) => moduleDoc._id);
+  const topics = await Topic.find({
+    moduleId: { $in: moduleIds },
+  })
+    .select('_id moduleId title order')
+    .sort({ order: 1 })
+    .lean();
+
+  const activeMcqs = await MCQ.find({
+    moduleId: { $in: moduleIds },
+    isActive: true,
+  })
+    .select('_id moduleId topicId difficulty')
+    .lean();
+
+  const failures = [];
+
+  console.log('\n=== DIAGNOSTIC MODULE CHECK ===');
+  Object.entries(TOPIC_MODULE_ORDERS).forEach(([topicKey, moduleOrder]) => {
+    const moduleDoc = modules.find((item) => item.order === moduleOrder);
+    const moduleId = moduleIdByOrder.get(moduleOrder);
+    const moduleTopics = topics.filter((topic) => String(topic.moduleId) === String(moduleId || ''));
+    const moduleMcqs = activeMcqs.filter((mcq) => String(mcq.moduleId) === String(moduleId || ''));
+
+    const status = {
+      topicKey,
+      moduleOrder,
+      moduleFound: !!moduleDoc,
+      topicCount: moduleTopics.length,
+      activeMcqCount: moduleMcqs.length,
+    };
+
+    console.log(
+      `${topicKey} -> module ${moduleOrder}: `
+      + `${status.moduleFound ? 'module OK' : 'module MISSING'}, `
+      + `${status.topicCount} topics, `
+      + `${status.activeMcqCount} active MCQs`
+    );
+
+    if (!moduleDoc) {
+      failures.push(`Missing diagnostic module for ${topicKey} (module ${moduleOrder}).`);
+      return;
+    }
+
+    if (moduleTopics.length === 0) {
+      failures.push(`No topics found for diagnostic topic ${topicKey} (module ${moduleOrder}).`);
+    }
+
+    if (moduleMcqs.length === 0) {
+      failures.push(`No active MCQs found for diagnostic topic ${topicKey} (module ${moduleOrder}).`);
+    }
+  });
+
+  console.log('\n=== OVERALL COUNTS ===');
+  console.log(`Active diagnostic modules: ${modules.length}/${requiredOrders.length}`);
+  console.log(`Topics across diagnostic modules: ${topics.length}`);
+  console.log(`Active MCQs across diagnostic modules: ${activeMcqs.length}`);
+
+  if (failures.length > 0) {
+    console.error('\nDiagnostic database validation failed:');
+    failures.forEach((failure) => console.error(`- ${failure}`));
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log('\nDiagnostic database validation passed.');
+}
+
+main()
+  .catch((error) => {
+    console.error('Diagnostic database validation failed:', error.message);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await mongoose.connection.close().catch(() => null);
   });

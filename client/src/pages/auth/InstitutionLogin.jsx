@@ -15,10 +15,29 @@ export default function InstitutionLogin() {
   const [errors,   setErrors]         = useState({});
 
   useEffect(() => {
+    console.log('[InstitutionLogin] useEffect triggered, isAuthenticated:', isAuthenticated);
     if (isAuthenticated) {
-      navigate('/institution/dashboard');
+      console.log('[InstitutionLogin] Navigating to dashboard');
+      // Use replace to prevent going back to login page
+      navigate('/institution/dashboard', { replace: true });
     }
   }, [isAuthenticated, navigate]);
+
+  // Check for previous 401 errors from sessionStorage
+  useEffect(() => {
+    const authError = sessionStorage.getItem('lastAuthError');
+    if (authError) {
+      try {
+        const errorDetails = JSON.parse(authError);
+        const errorMsg = `Authentication failed on ${errorDetails.url}: ${errorDetails.message || 'Unknown error'}`;
+        console.error('🔴 Previous Auth Error:', errorDetails);
+        toast.error(errorMsg, { duration: 5000 });
+        sessionStorage.removeItem('lastAuthError'); // Clear it after showing
+      } catch (e) {
+        console.error('Failed to parse auth error:', e);
+      }
+    }
+  }, []);
 
   const validate = () => {
     const e = {};
@@ -32,19 +51,24 @@ export default function InstitutionLogin() {
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = async (ev) => {
-    ev.preventDefault();
+  const handleSubmit = async () => {
+    console.log('[InstitutionLogin] handleSubmit called');
     if (!validate()) return;
     setLoading(true);
     try {
+      console.log('[InstitutionLogin] Attempting login with email:', email);
       const res = await loginInstitution(email, password);
+      console.log('[InstitutionLogin] Login response:', res);
       if (!res.success) {
-        toast.error(res.message || 'Login failed');
+        console.log('[InstitutionLogin] Login failed, showing error:', res.message);
+        toast.error(res.message || 'Login failed. Please check your credentials.');
         return;
       }
-      navigate('/institution/dashboard');
+      console.log('[InstitutionLogin] Login successful - useEffect will handle navigation');
+      // Don't manually navigate - let the useEffect handle it when isAuthenticated becomes true
     } catch (error) {
-      toast.error(error?.response?.data?.message || error?.message || 'Login failed');
+      console.error('[InstitutionLogin] Login error:', error);
+      toast.error(error?.response?.data?.message || error?.message || 'Login failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -86,9 +110,7 @@ export default function InstitutionLogin() {
           Access your admin dashboard
         </p>
 
-        <form onSubmit={handleSubmit}
-              className={styles.form}
-              noValidate>
+        <div className={styles.form}>
 
           {/* Email */}
           <div className={styles.fieldGroup}>
@@ -165,7 +187,8 @@ export default function InstitutionLogin() {
 
           {/* Submit Button with Institution theme */}
           <button
-            type="submit"
+            type="button"
+            onClick={handleSubmit}
             disabled={loading}
             className={`${styles.submitBtn} ${styles.submitBtnInstitution}`}
           >
@@ -173,7 +196,7 @@ export default function InstitutionLogin() {
               ? <span className={`${styles.spinner} ${styles.spinnerInstitution}`} />
               : 'Login to Dashboard'}
           </button>
-        </form>
+        </div>
 
         {/* Back to Home link */}
         <div className={styles.backToHome}>

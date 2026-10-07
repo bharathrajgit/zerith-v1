@@ -12,6 +12,7 @@ const protectInstitution = async (req, res, next) => {
     }
 
     if (!token) {
+      console.log('🔴 [protectInstitution] No token provided for', req.method, req.path);
       return res.status(401).json({
         success: false,
         message: 'Not authorized, no token provided',
@@ -19,8 +20,10 @@ const protectInstitution = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log('✅ [protectInstitution] Token decoded:', decoded.id, 'type:', decoded.type);
 
     if (decoded.type !== 'institution') {
+      console.log('🔴 [protectInstitution] Invalid token type:', decoded.type, 'for', req.path);
       return res.status(401).json({
         success: false,
         message: 'Invalid token type',
@@ -29,13 +32,17 @@ const protectInstitution = async (req, res, next) => {
 
     const institution = await Institution.findById(decoded.id);
     if (!institution) {
+      console.log('🔴 [protectInstitution] Institution not found for ID:', decoded.id);
       return res.status(401).json({
         success: false,
         message: 'Institution not found',
       });
     }
 
+    console.log('✅ [protectInstitution] Institution found:', institution._id, 'isActive:', institution.isActive);
+    
     if (!institution.isActive) {
+      console.log('🔴 [protectInstitution] Institution is not active:', institution._id);
       return res.status(401).json({
         success: false,
         message: 'Institution account deactivated',
@@ -45,9 +52,11 @@ const protectInstitution = async (req, res, next) => {
     req.institution = institution;
     next();
   } catch (error) {
+    console.error('🔴 [protectInstitution] Token verification failed:', error.message);
     return res.status(401).json({
       success: false,
       message: 'Not authorized, token verification failed',
+      error: error.message,
     });
   }
 };

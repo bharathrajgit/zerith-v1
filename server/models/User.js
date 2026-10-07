@@ -184,6 +184,50 @@ const userSchema = new mongoose.Schema(
       },
     },
 
+    codingLock: {
+      isLocked: {
+        type: Boolean,
+        default: false,
+      },
+      lockedUntil: {
+        type: Date,
+        default: null,
+      },
+      lockReason: {
+        type: String,
+        default: '',
+      },
+      lockCount: {
+        type: Number,
+        default: 0,
+      },
+    },
+
+    // Per-problem coding locks - stores locks for individual coding problems
+    // Key: problemId (String), Value: { isLocked, lockedUntil, lockReason, lockCount }
+    codingProblemLocks: {
+      type: Map,
+      of: {
+        isLocked: {
+          type: Boolean,
+          default: false,
+        },
+        lockedUntil: {
+          type: Date,
+          default: null,
+        },
+        lockReason: {
+          type: String,
+          default: '',
+        },
+        lockCount: {
+          type: Number,
+          default: 0,
+        },
+      },
+      default: new Map(),
+    },
+
     // Independent lock for the Diagnostic Test flow only.
     // Locking this does NOT affect MCQ Assessments.
     diagnosticLock: {
@@ -229,3 +273,4 @@ userSchema.methods.updateActivity = async function () {
 };
 
 module.exports = mongoose.model('User', userSchema);
+

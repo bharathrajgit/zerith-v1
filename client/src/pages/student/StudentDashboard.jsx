@@ -502,6 +502,12 @@ const readinessLabel = (s) =>
   : s >= 40 ? { text: 'Building Foundation', color: '#f59e0b' }
   : { text: 'Just Getting Started', color: '#f43f5e' };
 
+const readinessBadgeLabel = (s) =>
+  s >= 80 ? 'Placement Ready'
+  : s >= 60 ? 'Interview Practicing'
+  : s >= 40 ? 'Foundation Building'
+  : 'Beginner';
+
 const streakMsg = (n) =>
   n === 0 ? 'Start today!' : n < 3 ? 'Keep going!' : n < 7 ? 'On a roll 🔥' : 'Unstoppable! 🏆';
 
@@ -646,6 +652,7 @@ export default function StudentDashboardPage() {
 
   const readinessScore = progress?.placementReadiness ?? user?.placementReadiness ?? 0;
   const rl             = readinessLabel(readinessScore);
+  const readinessBadge = readinessBadgeLabel(readinessScore);
   const displayName    = user?.name || user?.username || user?.email?.split('@')[0] || 'Student';
   const streakCount    = streak?.currentStreak || 0;
 
@@ -743,7 +750,7 @@ export default function StudentDashboardPage() {
                 <TrendingUp size={20} color={rl.color} />
               </div>
               <span className="mc-stat-badge" style={{ background: `${rl.color}15`, color: rl.color }}>
-                {user?.currentLevel || 'Beginner'}
+                {readinessBadge}
               </span>
             </div>
             <div className="mc-stat-value" style={{ color: rl.color }}>{readinessScore}<span style={{ fontSize: '1rem', fontWeight: 600, color: '#334155' }}>%</span></div>

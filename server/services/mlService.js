@@ -3,6 +3,7 @@
 
 const axios = require('axios');
 const { ML_SERVICE_URL } = require('../config/env');
+const { calculatePlacementReadiness } = require('./scoreCalculator');
 
 const ML_URL = ML_SERVICE_URL;
 
@@ -12,6 +13,80 @@ const mlAxios = axios.create({
   timeout: 15000, // 15 seconds
   headers: { 'Content-Type': 'application/json' }
 });
+
+const normalizeMonitoringSessionType = (sessionType = '') => {
+  const normalized = String(sessionType || '').trim().toLowerCase();
+  return ['assessment', 'coding', 'diagnostic'].includes(normalized)
+    ? normalized
+    : 'assessment';
+};
+
+const normalizeProctorHealth = (payload = {}, fallbackMessage = '') => {
+  const data = payload?.data || payload || {};
+  const fullModelReady = Boolean(
+    data.fullModelReady == null
+      ? (
+        data.modelLoaded
+        && data.modelFilePresent
+        && data.onnxRuntimeAvailable
+        && data.imageStackAvailable
+      )
+      : data.fullModelReady
+  );
+  const cameraMonitoringReady = Boolean(
+    data.cameraMonitoringReady == null
+      ? (
+        data.supportsFallbackHeuristics
+        || data.supportsCameraMonitoring
+        || fullModelReady
+      )
+      : (data.cameraMonitoringReady || fullModelReady)
+  );
+
+  return {
+    ready: cameraMonitoringReady,
+    fullModelReady,
+    cameraMonitoringReady,
+    modelLoaded: Boolean(data.modelLoaded),
+    modelFilePresent: Boolean(data.modelFilePresent),
+    onnxRuntimeAvailable: Boolean(data.onnxRuntimeAvailable),
+    imageStackAvailable: Boolean(data.imageStackAvailable),
+    modelSource: data.modelSource || 'unknown',
+    supportedLabels: Array.isArray(data.supportedLabels) ? data.supportedLabels : [],
+    supportsCameraMonitoring: Boolean(data.supportsCameraMonitoring),
+    supportsPhoneDetection: Boolean(data.supportsPhoneDetection),
+    supportsExtraScreenDetection: Boolean(data.supportsExtraScreenDetection),
+    supportsFallbackHeuristics: Boolean(data.supportsFallbackHeuristics),
+    message: data.message || fallbackMessage || 'Live proctor monitoring is unavailable.',
+  };
+};
+
+const buildMonitoringReadiness = (status = {}, sessionType = 'assessment') => {
+  const normalizedSessionType = normalizeMonitoringSessionType(sessionType);
+  const fullModelReady = Boolean(status.fullModelReady);
+  const cameraMonitoringReady = Boolean(
+    status.cameraMonitoringReady
+    || status.supportsCameraMonitoring
+    || status.supportsFallbackHeuristics
+    || fullModelReady
+  );
+  // Heuristic camera monitoring is sufficient to start any monitored flow.
+  // We still expose fullModelReady so the client can show reduced-capability UI
+  // when the ONNX model is unavailable.
+  const ready = cameraMonitoringReady;
+  const limitedDetection = Boolean(ready && !fullModelReady);
+
+  return {
+    ...status,
+    ready,
+    fullModelReady,
+    cameraMonitoringReady,
+    limitedDetection,
+    capability: fullModelReady ? 'full' : limitedDetection ? 'limited' : 'unavailable',
+    sessionType: normalizedSessionType,
+    message: status.message || 'Live proctor monitoring is unavailable.',
+  };
+};
 
 // ── Fallback rule-based classifier ────────────────────
 // Used when ML service is down
@@ -180,19 +255,13 @@ const getReadinessScore = async (topicMasteryMap) => {
       'ML service unavailable for readiness:',
       error.message
     );
-    // Simple average fallback
-    const scores  = Object.values(topicMasteryMap);
-    const average = scores.length
-      ? scores.reduce((a, b) => a + b, 0) / scores.length
-      : 0;
-
+    const fallback = calculatePlacementReadiness(topicMasteryMap);
     return {
-      readiness_score: Math.round(average),
-      readiness_level: average >= 80
-        ? 'Placement Ready'
-        : average >= 60
-          ? 'Interview Practicing'
-          : 'Foundation Building',
+      readiness_score: fallback.readinessScore,
+      readiness_level: fallback.readinessLevel,
+      completed_topics: fallback.completedTopics,
+      total_topics: fallback.totalTopics,
+      missing_topics: fallback.missingTopics,
       fallback: true,
     };
   }
@@ -288,6 +357,72 @@ const analyzeProctorFrame = async (payload) => {
   }
 };
 
+const getProctorHealth = async () => {
+  try {
+    const res = await mlAxios.get('/ml/proctor/health');
+    return normalizeProctorHealth(res.data);
+  } catch (err) {
+    const payload = err?.response?.data;
+    if (payload?.data) {
+      return normalizeProctorHealth(payload, payload?.data?.message || err.message);
+    }
+
+    return normalizeProctorHealth({}, 'Live proctor monitoring service is unreachable.');
+  }
+};
+
+const analyzeMalpracticesFrame = async (payload) => {
+  try {
+    const res = await mlAxios.post('/ml/malpractices/analyze-frame', payload);
+    return res.data.data;
+  } catch (err) {
+    console.warn('Malpractices frame analysis failed:', err.message);
+    return {
+      detections: {
+        phoneVisible: false,
+        headPoseAway: false,
+        faceMissing: false,
+        multipleFaces: false,
+        extraScreenVisible: false,
+        faceCount: 1,
+      },
+      alerts: [],
+      signals: [],
+      riskLevel: 'LOW',
+      riskScore: 0,
+      confidence: 0,
+      metadata: {
+        modelLoaded: false,
+        modelSource: 'heuristic',
+      },
+      fallback: true,
+    };
+  }
+};
+
+const getMalpracticesHealth = async () => {
+  try {
+    const res = await mlAxios.get('/ml/malpractices/health');
+    return {
+      ready: res.data.success,
+      modelLoaded: res.data.data?.modelLoaded || false,
+      supportsPhoneDetection: res.data.data?.supportsPhoneDetection || false,
+      supportsHeadPoseDetection: res.data.data?.supportsHeadPoseDetection || false,
+      supportsFaceDetection: res.data.data?.supportsFaceDetection || false,
+      message: res.data.data?.message || 'Malpractices pipeline unavailable',
+    };
+  } catch (err) {
+    return {
+      ready: false,
+      modelLoaded: false,
+      supportsPhoneDetection: false,
+      supportsHeadPoseDetection: false,
+      supportsFaceDetection: false,
+      message: 'Malpractices pipeline service is unreachable.',
+    };
+  }
+};
+
 module.exports = {
   classifyLevel,
   detectWeakAreas,
@@ -298,6 +433,10 @@ module.exports = {
   getDropoutRisk,
   getCheatingRisk,
   analyzeProctorFrame,
+  getProctorHealth,
+  analyzeMalpracticesFrame,
+  getMalpracticesHealth,
+  buildMonitoringReadiness,
   normalizeLevelFromScore,
   buildDiagnosticPerformanceData,
   canonicalizeLevel,

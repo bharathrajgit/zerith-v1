@@ -9,12 +9,22 @@ import usePracticeMonitoring from '../../hooks/usePracticeMonitoring';
 import { LockScreen } from '../../components/malpractice/MalpracticeMonitor';
 import MonitoringConsentModal from '../../components/common/MonitoringConsentModal';
 import CameraMonitoringLayer from '../../components/common/CameraMonitoringLayer';
+import { getLatestMonitoringWarningMessage } from '../../utils/monitoringMessages';
 import {
   Clock, Check, X, Lightbulb, AlertTriangle,
   ChevronRight, RotateCcw, Trophy, Target
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import styles from './AssessmentPage.module.css';
+
+const formatDuration = (lockedUntil) => {
+  const remainingMs = Math.max(0, new Date(lockedUntil || 0).getTime() - Date.now());
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}h ${minutes}m ${seconds}s`;
+};
 
 /* ================================================================
    Round configuration
@@ -135,11 +145,13 @@ export default function AssessmentPage() {
   const [hintText, setHintText] = useState(null);
   const [hintLoading, setHintLoading] = useState(false);
   const [attemptNumber, setAttemptNumber] = useState(1);
+  const [startingRound, setStartingRound] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [slideDirection, setSlideDirection] = useState('right');
   const [lockCheckLoading, setLockCheckLoading] = useState(true);
   const [isLockedByMalpractice, setIsLockedByMalpractice] = useState(false);
   const [lockInfo, setLockInfo] = useState(null);
+  const [lockCountdown, setLockCountdown] = useState('');
 
   // ─── Anti‑malpractice session data ─────────────────────────
   // ─── All answers collected ─────────────────────────────────
@@ -155,16 +167,22 @@ export default function AssessmentPage() {
   const requiredCorrectAnswers = getRequiredCorrectAnswers(resolvedRound, totalQuestions);
 
   const handleMonitoringStatusChange = useCallback((nextState) => {
-    const topAlert = Array.isArray(nextState?.alerts) ? nextState.alerts[0] : null;
-    const alertMessage = topAlert?.message || 'Monitoring warning';
+    const warningMessage = getLatestMonitoringWarningMessage(nextState, 'Monitoring warning detected.');
 
-    if (nextState.finalFlagged) {
-      toast.error(`${alertMessage}. Warning ${nextState.warningCount}/${nextState.warningLimit}.`);
+    if (nextState?.isLocked) {
+      setIsLockedByMalpractice(true);
+      setLockInfo(nextState);
+      toast.error(warningMessage);
       return;
     }
 
-    if ((nextState.warningCount || 0) > 0) {
-      toast(`${alertMessage}. Warning ${nextState.warningCount}/${nextState.warningLimit}`, {
+    if (nextState?.finalFlagged) {
+      toast.error(`${warningMessage} Warning ${nextState.warningCount}/${nextState.warningLimit}.`);
+      return;
+    }
+
+    if ((nextState?.warningCount || 0) > 0) {
+      toast(`${warningMessage} Warning ${nextState.warningCount}/${nextState.warningLimit}.`, {
         icon: '!',
       });
     }
@@ -172,22 +190,30 @@ export default function AssessmentPage() {
 
 
   const {
+    browserEventTrackingActive,
     browserMetrics,
     captureVideoRef,
     consentModal,
+    error: monitoringError,
     finishMonitoring,
-    isMobile,
     isMonitoring,
+    monitoringMode,
+    monitoringReadiness,
+    monitoringStage,
     sessionId,
     sessionState,
     startMonitoring,
     stream,
     trackBrowserEvent,
     visionState,
+    faceMissingCountdown,
+    waitForMonitoringReady,
   } = usePracticeMonitoring({
     sessionType: 'assessment',
     topicId,
     moduleId,
+    mode: 'full',
+    allowBrowserOnlyFallback: true,
     institutionLinked: !!user?.institutionId,
     sessionLabel: 'MCQ practice session',
     onStatusChange: handleMonitoringStatusChange,
@@ -198,7 +224,7 @@ export default function AssessmentPage() {
     let copyThrottleTimer;
     
     const onVisibility = () => {
-      if (document.hidden && screen === 'question') {
+      if (document.hidden && browserEventTrackingActive && screen === 'question') {
         trackBrowserEvent('tabSwitches');
         toast('Do not switch tabs during the MCQ test. Warnings are being tracked.', {
           icon: '⚠️',
@@ -207,7 +233,7 @@ export default function AssessmentPage() {
     };
     
     const onCopy = () => {
-      if (screen === 'question' && !copyThrottleTimer) {
+      if (browserEventTrackingActive && screen === 'question' && !copyThrottleTimer) {
         trackBrowserEvent('copyAttempts');
         copyThrottleTimer = setTimeout(() => {
           copyThrottleTimer = null;
@@ -216,7 +242,7 @@ export default function AssessmentPage() {
     };
     
     const onBlur = () => {
-      if (screen === 'question') {
+      if (browserEventTrackingActive && screen === 'question') {
         trackBrowserEvent('windowBlurCount');
       }
     };
@@ -231,7 +257,7 @@ export default function AssessmentPage() {
       window.removeEventListener('blur', onBlur);
       if (copyThrottleTimer) clearTimeout(copyThrottleTimer);
     };
-  }, [screen, trackBrowserEvent]);
+  }, [browserEventTrackingActive, screen, trackBrowserEvent]);
 
   useEffect(() => {
     let isMounted = true;
@@ -296,6 +322,47 @@ export default function AssessmentPage() {
     }
   }, [finishMonitoring, moduleId, sessionId, topicId]);
 
+  useEffect(() => {
+    if (!sessionState?.isLocked) return;
+
+    setIsLockedByMalpractice(true);
+    setLockInfo((current) => current || sessionState);
+    finishMonitoring(
+      {
+        topicId,
+        moduleId,
+      },
+      { keepalive: true }
+    ).catch(() => null);
+  }, [finishMonitoring, moduleId, sessionState, topicId]);
+
+  // Lock countdown timer - always called but only runs when locked
+  useEffect(() => {
+    if (!isLockedByMalpractice || !lockInfo?.lockedUntil) return;
+
+    setLockCountdown(formatDuration(lockInfo.lockedUntil));
+
+    const intervalId = setInterval(() => {
+      const remaining = new Date(lockInfo.lockedUntil).getTime() - Date.now();
+      if (remaining <= 0) {
+        clearInterval(intervalId);
+        setIsLockedByMalpractice(false);
+        setLockInfo(null);
+        setLockCountdown('');
+        setScreen('intro');
+        setCurrentIndex(0);
+        setSelectedOption(null);
+        setSubmitted(false);
+        setShowExplanation(false);
+        setResults(null);
+        return;
+      }
+      setLockCountdown(formatDuration(lockInfo.lockedUntil));
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [isLockedByMalpractice, lockInfo?.lockedUntil]);
+
   // ─── Timer logic ───────────────────────────────────────────
   useEffect(() => {
     if (screen === 'question' && timeLeft > 0 && !submitted) {
@@ -323,28 +390,56 @@ export default function AssessmentPage() {
 
   // ─── Start the question round ──────────────────────────────
   const startRound = async () => {
+    if (startingRound) {
+      return;
+    }
+
     if (!moduleId) {
       toast.error('Assessment setup is still loading. Please try again in a moment.');
       return;
     }
 
-    const monitoringApproved = await startMonitoring();
-    if (!monitoringApproved) {
-      return;
-    }
+    setStartingRound(true);
 
-    setCurrentIndex(0);
-    setTimeLeft(config.timePerQ);
-    setSelectedOption(null);
-    setSubmitted(false);
-    setShowExplanation(false);
-    setCurrentExplanation('');
-    setCurrentCorrectAnswer(null);
-    setHintText(null);
-    setIsCorrect(false);
-    isSubmittingAnswerRef.current = false;
-    answersRef.current = [];
-    setScreen('question');
+    try {
+      const monitoringApproved = await startMonitoring();
+      if (!monitoringApproved) {
+        toast.error(monitoringError || 'Monitoring could not be started. Please try again.');
+        return;
+      }
+
+      const monitoringReady = await waitForMonitoringReady();
+      if (!monitoringReady) {
+        throw new Error('Camera monitoring did not finish starting. Please try again.');
+      }
+
+      setCurrentIndex(0);
+      setTimeLeft(config.timePerQ);
+      setSelectedOption(null);
+      setSubmitted(false);
+      setShowExplanation(false);
+      setCurrentExplanation('');
+      setCurrentCorrectAnswer(null);
+      setHintText(null);
+      setIsCorrect(false);
+      isSubmittingAnswerRef.current = false;
+      answersRef.current = [];
+      setScreen('question');
+    } catch (error) {
+      if (sessionId || sessionState?.monitoringSessionId) {
+        await finishMonitoring(
+          {
+            topicId,
+            moduleId,
+          },
+          { keepalive: true }
+        ).catch(() => null);
+      }
+
+      toast.error(error.message || 'Monitoring could not be started. Please try again.');
+    } finally {
+      setStartingRound(false);
+    }
   };
 
   // ─── Handle answer submission ──────────────────────────────
@@ -549,7 +644,14 @@ export default function AssessmentPage() {
   const monitoringRiskLevel = sessionState?.riskLevel || visionState?.riskLevel || 'NONE';
   const monitoringWarningCount = Number(sessionState?.warningCount || 0);
   const monitoringWarningLimit = Number(sessionState?.warningLimit || (user?.institutionId ? 2 : 3));
+  const latestMonitoringMessage = getLatestMonitoringWarningMessage(sessionState);
   const monitoringSignals = Array.isArray(sessionState?.signals) ? sessionState.signals : [];
+  const limitedCameraMonitoring = isMonitoring
+    && monitoringMode !== 'browser-only'
+    && (monitoringReadiness?.limitedDetection || !monitoringReadiness?.fullModelReady);
+  const faceMissingNotice = faceMissingCountdown > 0
+    ? `⚠️ Face missing! Return within ${faceMissingCountdown} seconds or test will be locked.`
+    : '';
   const monitoringStatusClass =
     sessionState?.finalFlagged || monitoringRiskLevel === 'HIGH'
       ? styles.monitoringDanger
@@ -558,15 +660,29 @@ export default function AssessmentPage() {
       : styles.monitoringSafe;
   const monitoringStatusLabel = sessionState?.finalFlagged
     ? 'Flagged for review'
+    : monitoringMode === 'browser-only' && isMonitoring
+    ? 'Browser-only monitoring active'
+    : monitoringStage === 'warming_up'
+    ? 'Monitoring warm-up in progress'
+    : monitoringStage === 'checking_readiness'
+      || monitoringStage === 'requesting_camera'
+      || monitoringStage === 'awaiting_video'
+      || monitoringStage === 'starting_session'
+    ? 'Starting camera monitoring'
+    : monitoringStage === 'unavailable' || monitoringStage === 'error'
+    ? 'Monitoring unavailable'
+    : limitedCameraMonitoring
+    ? 'Limited camera monitoring active'
     : isMonitoring
     ? 'Live monitoring active'
     : 'Monitoring starts with the round';
 
-  const monitoringUi = isMonitoring ? (
+  const monitoringUi = stream ? (
     <CameraMonitoringLayer
       stream={stream}
       captureVideoRef={captureVideoRef}
-      hidden={isMobile}
+      detections={visionState?.detections}
+      frameSize={visionState?.frameSize}
       width={190}
       height={140}
     />
@@ -613,22 +729,38 @@ export default function AssessmentPage() {
         </div>
       ) : (
         <p className={styles.monitoringHint}>
-          Keep your face visible and stay on this tab until the round is complete.
+          {monitoringMode === 'browser-only' && isMonitoring
+            ? 'Browser-based malpractice tracking is active. Stay on this tab until the round is complete.'
+            : limitedCameraMonitoring
+            ? 'Camera monitoring is active with limited detection. Browser warnings and face visibility are still enforced.'
+            : monitoringStage === 'warming_up'
+            ? 'Keep your face centered while live monitoring finishes warming up.'
+            : monitoringStage === 'unavailable' || monitoringStage === 'error'
+            ? 'Live camera monitoring is unavailable right now. Browser-based warnings will be used if you continue.'
+            : 'Keep your face visible and stay on this tab until the round is complete.'}
         </p>
       )}
     </div>
   );
 
-  const monitoringLiveAlert = activeMonitoringAlert || monitoringWarningCount > 0 || sessionState?.finalFlagged ? (
+  const monitoringLiveAlertMessage = sessionState?.isLocked
+    ? `Assessment locked due to: ${sessionState?.lockReason || 'repeated malpractice warnings'}. Unlocks in: ${formatDuration(sessionState?.lockedUntil)}`
+    : latestMonitoringMessage
+    || activeMonitoringAlert?.message
+    || (sessionState?.finalFlagged
+      ? 'This assessment has been flagged for review.'
+      : `Warnings recorded: ${monitoringWarningCount}/${monitoringWarningLimit}`);
+  const hasRecordedMonitoringMessage = Boolean(latestMonitoringMessage || activeMonitoringAlert?.message);
+  const monitoringLiveAlertText = sessionState?.isLocked
+    ? monitoringLiveAlertMessage
+    : hasRecordedMonitoringMessage && faceMissingNotice
+    ? `${monitoringLiveAlertMessage} ${faceMissingNotice}`
+    : faceMissingNotice || monitoringLiveAlertMessage;
+  const monitoringLiveAlert = activeMonitoringAlert || monitoringWarningCount > 0 || sessionState?.finalFlagged || sessionState?.isLocked || faceMissingCountdown > 0 ? (
     <div className={`${styles.monitoringAlert} ${monitoringStatusClass}`}>
       <div className={styles.monitoringAlertHeader}>
         <AlertTriangle size={16} />
-        <span>
-          {activeMonitoringAlert?.message
-            || (sessionState?.finalFlagged
-              ? 'This assessment has been flagged for review.'
-              : `Warnings recorded: ${monitoringWarningCount}/${monitoringWarningLimit}`)}
-        </span>
+        <span>{monitoringLiveAlertText}</span>
       </div>
       <p className={styles.monitoringAlertMeta}>
         Confidence: {Math.round(Number(visionState?.confidence || activeMonitoringAlert?.confidence || 0) * 100)}%
@@ -657,22 +789,158 @@ export default function AssessmentPage() {
   }
 
   if (isLockedByMalpractice && lockInfo) {
+    // Show lock overlay but allow navigation to other pages
     return (
-      <LockScreen
-        lockInfo={lockInfo}
-        onUnlock={() => {
-          // Lock expired: send student back to the assessment intro.
-          // Previous progress is not restored — they must start fresh.
-          setIsLockedByMalpractice(false);
-          setLockInfo(null);
-          setScreen('intro');
-          setCurrentIndex(0);
-          setSelectedOption(null);
-          setSubmitted(false);
-          setShowExplanation(false);
-          setResults(null);
-        }}
-      />
+      <StudentLayout>
+        <div style={{
+          position: 'relative',
+          width: '100%',
+          height: '100%',
+          minHeight: '100vh',
+        }}>
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(2, 6, 23, 0.97) 100%)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem',
+            textAlign: 'center',
+          }}>
+            <div style={{
+              width: '120px',
+              height: '120px',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, rgba(248, 113, 113, 0.2) 0%, rgba(239, 68, 68, 0.1) 100%)',
+              border: '3px solid rgba(248, 113, 113, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: '2rem',
+              animation: 'pulse 2s ease-in-out infinite',
+            }}>
+              <span style={{ fontSize: '3rem' }}>🔒</span>
+            </div>
+            
+            <h1 style={{ 
+              color: '#f87171', 
+              fontSize: '2.5rem', 
+              marginBottom: '0.5rem', 
+              fontWeight: 700,
+              letterSpacing: '-0.02em',
+            }}>
+              Assessment Locked
+            </h1>
+            
+            <p style={{ 
+              color: '#fbbf24', 
+              fontSize: '1.1rem', 
+              marginBottom: '2rem', 
+              maxWidth: '600px', 
+              lineHeight: 1.6,
+              fontWeight: 500,
+            }}>
+              ⚠️ Violation detected: {lockInfo.lockReason || 'repeated malpractice warnings'}
+            </p>
+            
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(16, 185, 129, 0.1) 100%)',
+              border: '2px solid rgba(34, 197, 94, 0.4)',
+              borderRadius: '1rem',
+              padding: '1.5rem 2.5rem',
+              marginBottom: '2rem',
+              boxShadow: '0 8px 32px rgba(34, 197, 94, 0.2)',
+            }}>
+              <p style={{ 
+                color: '#94a3b8', 
+                fontSize: '0.9rem', 
+                marginBottom: '0.5rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                fontWeight: 600,
+              }}>
+                Time Remaining
+              </p>
+              <div style={{
+                color: '#22c55e',
+                fontSize: '2.5rem',
+                fontWeight: 800,
+                letterSpacing: '0.02em',
+                textShadow: '0 0 20px rgba(34, 197, 94, 0.5)',
+              }}>
+                {lockCountdown}
+              </div>
+            </div>
+            
+            <div style={{
+              background: 'rgba(148, 163, 184, 0.1)',
+              border: '1px solid rgba(148, 163, 184, 0.2)',
+              borderRadius: '0.75rem',
+              padding: '1rem 1.5rem',
+              marginBottom: '2rem',
+              maxWidth: '500px',
+            }}>
+              <p style={{ 
+                color: '#cbd5e1', 
+                fontSize: '0.95rem', 
+                lineHeight: 1.6,
+                marginBottom: '0.5rem',
+              }}>
+                📌 You can navigate to other modules while waiting for the lock to expire.
+              </p>
+              {lockInfo.institutionId && (
+                <p style={{ 
+                  color: '#fbbf24', 
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                }}>
+                  🏢 Your institution has been notified.
+                </p>
+              )}
+            </div>
+            
+            <button
+              style={{
+                background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                color: 'white',
+                padding: '1rem 2.5rem',
+                borderRadius: '0.75rem',
+                fontSize: '1.1rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                border: 'none',
+                marginBottom: '1.5rem',
+                transition: 'all 0.3s ease',
+                boxShadow: '0 4px 20px rgba(59, 130, 246, 0.4)',
+              }}
+              onClick={() => navigate('/modules')}
+              onMouseOver={(e) => {
+                e.target.style.transform = 'translateY(-2px)';
+                e.target.style.boxShadow = '0 8px 30px rgba(59, 130, 246, 0.5)';
+              }}
+              onMouseOut={(e) => {
+                e.target.style.transform = 'translateY(0)';
+                e.target.style.boxShadow = '0 4px 20px rgba(59, 130, 246, 0.4)';
+              }}
+            >
+              📚 Go to Modules
+            </button>
+            
+            <p style={{ 
+              color: '#64748b', 
+              fontSize: '0.85rem',
+              marginTop: '1rem',
+            }}>
+              💡 Contact your instructor if this is an error
+            </p>
+          </div>
+        </div>
+      </StudentLayout>
     );
   }
 
@@ -733,9 +1001,10 @@ export default function AssessmentPage() {
             <button 
               className={styles.beginBtn} 
               onClick={startRound}
+              disabled={startingRound}
             >
-              Begin Round 
-              <ChevronRight size={18} className={styles.btnIcon} />
+              {startingRound ? 'Starting Round...' : 'Begin Round'}
+              {!startingRound ? <ChevronRight size={18} className={styles.btnIcon} /> : null}
             </button>
           </div>
         </div>
@@ -1101,3 +1370,4 @@ export default function AssessmentPage() {
 
   return null;
 }
+

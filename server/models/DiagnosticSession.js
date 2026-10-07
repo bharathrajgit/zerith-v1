@@ -83,6 +83,11 @@ const diagnosticSessionSchema = new mongoose.Schema(
       required: [true, 'Session token is required'],
       unique: true,
     },
+    monitoringSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MonitoringSession',
+      default: null,
+    },
     status: {
       type: String,
       enum: ['in_progress', 'completed', 'expired'],

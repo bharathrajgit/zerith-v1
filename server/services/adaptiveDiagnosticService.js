@@ -25,6 +25,7 @@ const CORE_QUESTIONS_PER_TOPIC = 3;
 const ADAPTIVE_BLOCK_SIZE = 5;
 const QUESTION_TIME_LIMIT = 45;
 const SESSION_EXPIRY_MS = 60 * 60 * 1000;
+const DIAGNOSTIC_POOL_INCOMPLETE = 'DIAGNOSTIC_POOL_INCOMPLETE';
 
 const difficultyWeight = {
   Hard: 3,
@@ -48,6 +49,13 @@ function seededShuffle(array, rng) {
     [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
   }
   return items;
+}
+
+function buildDiagnosticPoolError(message, meta = {}) {
+  const error = new Error(message);
+  error.code = DIAGNOSTIC_POOL_INCOMPLETE;
+  error.meta = meta;
+  return error;
 }
 
 function buildResults(answers = []) {
@@ -368,7 +376,15 @@ class AdaptiveDiagnosticService {
           foundModuleOrders: moduleDocs.map((moduleDoc) => moduleDoc.order),
         };
         console.error('Diagnostic pool build failure:', debugPayload);
-        throw new Error(`No active MCQs found for diagnostic topic ${topicKey} (module ${moduleOrder})`);
+        throw buildDiagnosticPoolError(
+          `No active MCQs found for diagnostic topic ${topicKey} (module ${moduleOrder})`,
+          {
+            topicKey,
+            moduleOrder,
+            moduleId: moduleId || null,
+            foundModuleOrders: moduleDocs.map((moduleDoc) => moduleDoc.order),
+          }
+        );
       }
 
       pools[topicKey] = shuffled;
@@ -470,6 +486,7 @@ module.exports = {
   MAX_QUESTIONS,
   QUESTION_TIME_LIMIT,
   SESSION_EXPIRY_MS,
+  DIAGNOSTIC_POOL_INCOMPLETE,
   buildResults,
   service: new AdaptiveDiagnosticService(),
 };

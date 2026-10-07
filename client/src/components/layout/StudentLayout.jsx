@@ -34,6 +34,7 @@ export default function StudentLayout({ children }) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   const displayName = user?.name?.trim() || user?.username?.split('@')[0] || 'Student';
   const avatarColor = getColorFromUsername(user?.username || displayName || 'U');
@@ -63,13 +64,23 @@ export default function StudentLayout({ children }) {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Detect mobile screen
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
   const linkClass = ({ isActive }) =>
-    `${styles.navLink} ${isActive && !location.pathname.includes('#') ? styles.navLinkActive : ''}`;
+    `${styles.navLink} ${isActive ? styles.navLinkActive : ''}`;
 
   return (
     <div className={styles.layout}>
@@ -79,7 +90,7 @@ export default function StudentLayout({ children }) {
       )}
 
       {/* Enhanced Sidebar */}
-      <aside className={`${styles.sidebar} ${mobileOpen ? styles.sidebarOpen : ''}`}>
+      <aside className={`${styles.sidebar} ${mobileOpen ? styles.sidebarOpen : ''} ${!isMobile ? styles.sidebarStatic : ''}`}>
         {/* Logo with glow effect */}
         <div className={styles.logoWrapper}>
           <img

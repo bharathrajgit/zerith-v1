@@ -17,6 +17,7 @@ const syncDiagnosticStorage = (userType, user) => {
 };
 
 const clearStoredSession = () => {
+  console.log('[AuthContext] clearStoredSession called - clearing localStorage');
   localStorage.removeItem("dsa_token");
   localStorage.removeItem("dsa_user_type");
   localStorage.removeItem(DIAGNOSTIC_STORAGE_KEY);
@@ -36,18 +37,23 @@ export const AuthProvider = ({ children }) => {
   const persistAuthState = useCallback((user, token, userType) => {
     if (token) {
       localStorage.setItem("dsa_token", token);
+      console.log('[AuthContext] Token saved to localStorage:', !!token);
     }
     if (userType) {
       localStorage.setItem("dsa_user_type", userType);
+      console.log('[AuthContext] UserType saved to localStorage:', userType);
     }
     syncDiagnosticStorage(userType, user);
   }, []);
 
   const loadUser = useCallback(async () => {
+    console.log('[AuthContext] loadUser called');
     const token = localStorage.getItem("dsa_token");
     let userType = localStorage.getItem("dsa_user_type");
+    console.log('[AuthContext] Token from localStorage:', !!token, 'UserType:', userType);
 
     if (!token) {
+      console.log('[AuthContext] No token found, clearing session');
       clearStoredSession();
       setState((prev) => ({ ...prev, isLoading: false }));
       return;
@@ -89,7 +95,9 @@ export const AuthProvider = ({ children }) => {
         isLoading: false,
         isAuthenticated: true,
       });
-    } catch {
+      console.log('[AuthContext] User loaded successfully, isAuthenticated set to true');
+    } catch (error) {
+      console.error('[AuthContext] loadUser error:', error);
       clearStoredSession();
       setState({ user: null, token: null, userType: null, isLoading: false, isAuthenticated: false });
     }
@@ -119,13 +127,24 @@ export const AuthProvider = ({ children }) => {
 
   const loginInstitution = async (email, password) => {
     try {
+      console.log('[AuthContext] Attempting institution login with email:', email);
       const res = await api.post("/institution/auth/login", { email, password });
+      console.log('[AuthContext] Institution login response:', res.data);
       const { token } = res.data;
       const institution = res.data.data?.institution || res.data.institution;
+      console.log('[AuthContext] Institution data:', institution);
+      
+      // First persist to localStorage
       persistAuthState(institution, token, "institution");
+      console.log('[AuthContext] Auth state persisted to localStorage');
+      
+      // Then update React state
       setState({ user: institution, token, userType: "institution", isLoading: false, isAuthenticated: true });
+      console.log('[AuthContext] React state updated');
+      
       return { success: true };
     } catch (error) {
+      console.error('[AuthContext] Institution login error:', error);
       return {
         success: false,
         message: error?.response?.data?.message || error?.message || 'Login failed',

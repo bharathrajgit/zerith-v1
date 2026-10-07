@@ -18,7 +18,7 @@ The runtime endpoint is `ml-service -> POST /ml/proctor/analyze-frame`.
 
 ## Dataset Strategy
 
-This scaffold is intentionally **dataset-slug configurable** through `PROCTOR_KAGGLE_DATASET` instead of hard-coding one Kaggle slug in code. Kaggle ownership, licensing, and exact slugs can change, so the pipeline stays stable while you plug in the webcam/proctoring dataset you choose.
+This scaffold is intentionally configurable through `PROCTOR_KAGGLE_DATASETS` so the pipeline can blend multiple free webcam/proctoring datasets. `PROCTOR_KAGGLE_DATASET` is still accepted as a backward-compatible one-dataset fallback.
 
 Recommended class layout after download/prep:
 
@@ -37,8 +37,29 @@ The existing repo reference to `Mercor Cheating Detection` is still useful for s
 1. Set environment variables:
 
 ```powershell
-$env:PROCTOR_KAGGLE_DATASET="your-kaggle-slug"
+$env:KAGGLE_CONFIG_DIR="D:\VS Code Folder\dsa-platform\ml-training\.kaggle"
+$env:PROCTOR_KAGGLE_DATASETS="raajanwankhade/oep-dataset,goatman1/head-pose-tracking,ardutraagiginting/exam-cheating-dataset"
 $env:ML_TRAINING_DATA_DIR="D:\VS Code Folder\dsa-platform\ml-training\data\raw"
+```
+
+Place your Kaggle token at:
+
+`$env:KAGGLE_CONFIG_DIR\kaggle.json`
+
+Format:
+
+```json
+{"username":"<kaggle_username>","key":"<kaggle_api_key>"}
+```
+
+You can copy the template from:
+
+`ml-training\.kaggle\kaggle.example.json`
+
+Optional:
+
+```powershell
+$env:PROCTOR_CLASS_MAP="D:\VS Code Folder\dsa-platform\ml-training\class_map.proctor.json"
 ```
 
 2. Download and unpack:
@@ -58,6 +79,12 @@ python ml-training\train_proctor_model.py
 
 ```powershell
 python ml-training\export_onnx.py
+```
+
+Single-command runner (optional):
+
+```powershell
+python ml-training\run_proctor_pipeline.py
 ```
 
 5. Verify artifacts:
@@ -83,6 +110,8 @@ These are the default runtime thresholds expected by the app:
 ## Notes
 
 - The runtime contract is fixed to the seven labels above, in that exact order.
+- `download_dataset.py` now writes each Kaggle source into its own raw subdirectory and records a manifest.
+- `prepare_dataset.py` defaults to `class_map.proctor.json` and can synthesize `multiple_faces`, `face_missing`, and `extra_screen_visible` if the raw datasets do not ship those folders directly.
 - The current runtime endpoint supports fallback behavior when the ONNX file is not present yet.
 - Heuristic fallback stays face-only; gadget classes are emitted only by an ONNX model.
 - Raw video should not be persisted by default; only derived alerts and aggregated metadata are stored in app data.

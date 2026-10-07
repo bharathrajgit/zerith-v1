@@ -49,6 +49,7 @@ const malpracticeLogSchema = new mongoose.Schema(
       type: String,
       enum: [
         'gaze_away',
+        'face_missing',
         'multiple_faces',
         'mobile_detected',
         'tab_switch',
@@ -169,6 +170,10 @@ const malpracticeLogSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
     similarSessionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Assessment',
@@ -193,7 +198,7 @@ const malpracticeLogSchema = new mongoose.Schema(
   }
 );
 
-malpracticeLogSchema.index({ monitoringSessionId: 1 }, { unique: true, sparse: true });
+malpracticeLogSchema.index({ monitoringSessionId: 1 }, { sparse: true });
 
 const MalpracticeLog = mongoose.model('MalpracticeLog', malpracticeLogSchema);
 module.exports = MalpracticeLog;

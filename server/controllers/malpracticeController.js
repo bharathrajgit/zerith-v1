@@ -4,15 +4,26 @@ const MalpracticeLog = require('../models/MalpracticeLog');
 const MonitoringEvidence = require('../models/MonitoringEvidence');
 
 // ─── Constants ─────────────────────────────────────────────────────────────
-const LOCK_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+const LOCK_DURATION_MS = 3 * 60 * 60 * 1000; // 3 hours
 const EVIDENCE_RETENTION_DAYS = 30;
 const MAX_IMAGE_BYTES = 200 * 1024;
 const DEDUP_WINDOW_MS = 15000; // Ignore identical violation within 15 seconds (aligned with client cooldowns)
 const SESSION_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h window for counting violations
+const LOCK_WARNING_LIMIT = 3;
+const LOCK_WARNING_LIMITS = {
+  mobile_detected: 2,  // 2 warnings for phone/mobile
+  face_missing: 3,     // 3 warnings for face missing
+  gaze_away: 3,         // 3 warnings for gaze away
+  multiple_faces: 3,    // 3 warnings for multiple faces
+  tab_switch: 3,        // 3 warnings for tab switch
+  copy_attempt: 3,      // 3 warnings for copy attempt
+  behavioral_anomaly: 3, // 3 warnings for behavioral anomaly
+};
 
-const ALLOWED_SESSION_TYPES = new Set(['assessment', 'diagnostic']);
+const ALLOWED_SESSION_TYPES = new Set(['assessment', 'coding', 'diagnostic']);
 const ALLOWED_VIOLATION_TYPES = new Set([
   'gaze_away',
+  'face_missing',
   'multiple_faces',
   'mobile_detected',
   'tab_switch',
@@ -22,6 +33,7 @@ const ALLOWED_VIOLATION_TYPES = new Set([
 
 const VIOLATION_TRIGGER_CODES = {
   gaze_away: 'GAZE_AWAY',
+  face_missing: 'FACE_MISSING',
   multiple_faces: 'MULTIPLE_FACES',
   mobile_detected: 'PHONE_VISIBLE',
   tab_switch: 'TAB_SWITCH',
@@ -33,6 +45,7 @@ const VIOLATION_TRIGGER_CODES = {
 const LOCK_FIELD = {
   diagnostic: 'diagnosticLock',
   assessment: 'assessmentLock',
+  coding: 'codingLock',
 };
 
 // ─── Utility helpers ────────────────────────────────────────────────────────
@@ -62,6 +75,19 @@ const clearLock = (user, sessionType) => {
     lockReason: '',
     lockCount: Number(user[field]?.lockCount || 0),
   };
+};
+
+const resolveMalpracticeLogs = async (studentId, sessionType = '') => {
+  const query = { userId: studentId };
+  if (sessionType && ALLOWED_SESSION_TYPES.has(sessionType)) {
+    query.sessionType = sessionType;
+  }
+
+  await MalpracticeLog.updateMany(query, {
+    $set: {
+      resolvedAt: new Date(),
+    },
+  });
 };
 
 /**
@@ -109,10 +135,11 @@ const buildEvidenceExpiry = (capturedAt = new Date()) =>
  * to prevent clients from faking the warningNumber.
  */
 const shouldLockForViolation = async ({ userId, violationType, warningNumber, sessionData = {} }) => {
-  if (violationType === 'mobile_detected') return true;
+  const lockLimit = LOCK_WARNING_LIMITS[violationType] || LOCK_WARNING_LIMIT;
 
   if (violationType === 'copy_attempt') {
-    return Number(sessionData.copyAttempts || 0) >= 5 || Number(warningNumber || 0) >= 5;
+    return Number(sessionData.copyAttempts || 0) >= lockLimit
+      || Number(warningNumber || 0) >= lockLimit;
   }
 
   // For camera-based violations, count real logs from DB in the session window.
@@ -126,26 +153,43 @@ const shouldLockForViolation = async ({ userId, violationType, warningNumber, se
   // Use whichever is higher — client or server count — for safety.
   const effectiveCount = Math.max(Number(warningNumber || 0), dbCount);
 
-  if (violationType === 'tab_switch') return effectiveCount >= 3;
-  if (violationType === 'gaze_away') return effectiveCount >= 3;
-  if (violationType === 'multiple_faces') return effectiveCount >= 3;
+  console.log('[MalpracticeController] shouldLockForViolation:', { violationType, warningNumber, dbCount, effectiveCount, lockLimit, shouldLock: effectiveCount >= lockLimit });
 
-  return effectiveCount >= 3;
+  return effectiveCount >= lockLimit;
 };
 
 const deriveRiskLevel = ({ violationType, warningNumber, sessionData = {} }) => {
+  const lockLimit = LOCK_WARNING_LIMITS[violationType] || LOCK_WARNING_LIMIT;
+  
   if (violationType === 'mobile_detected') return 'HIGH';
-  if (violationType === 'multiple_faces') return Number(warningNumber || 0) >= 3 ? 'HIGH' : 'MEDIUM';
-  if (violationType === 'tab_switch') return Number(sessionData.tabSwitches || 0) >= 3 ? 'HIGH' : 'LOW';
+  if (violationType === 'multiple_faces') return Number(warningNumber || 0) >= lockLimit ? 'HIGH' : 'MEDIUM';
+  if (violationType === 'tab_switch') return Number(sessionData.tabSwitches || 0) >= lockLimit ? 'HIGH' : 'LOW';
   if (violationType === 'copy_attempt') {
-    if (Number(sessionData.copyAttempts || 0) >= 5 || Number(warningNumber || 0) >= 5) return 'HIGH';
-    return Number(warningNumber || 0) >= 3 ? 'MEDIUM' : 'LOW';
-  }
-  if (violationType === 'gaze_away') {
-    if (Number(warningNumber || 0) >= 3) return 'HIGH';
+    if (
+      Number(sessionData.copyAttempts || 0) >= lockLimit
+      || Number(warningNumber || 0) >= lockLimit
+    ) {
+      return 'HIGH';
+    }
     return Number(warningNumber || 0) >= 2 ? 'MEDIUM' : 'LOW';
   }
-  return Number(warningNumber || 0) >= 3 ? 'HIGH' : 'MEDIUM';
+  if (violationType === 'gaze_away') {
+    if (Number(warningNumber || 0) >= lockLimit) return 'HIGH';
+    return Number(warningNumber || 0) >= 2 ? 'MEDIUM' : 'LOW';
+  }
+  if (violationType === 'face_missing') {
+    if (Number(warningNumber || 0) >= lockLimit) return 'HIGH';
+    return Number(warningNumber || 0) >= 2 ? 'MEDIUM' : 'LOW';
+  }
+  return Number(warningNumber || 0) >= lockLimit ? 'HIGH' : 'MEDIUM';
+};
+
+const getSourceFlagsForViolation = (violationType = '') => {
+  if (['tab_switch', 'copy_attempt', 'behavioral_anomaly'].includes(violationType)) {
+    return ['browser'];
+  }
+
+  return ['vision'];
 };
 
 const persistEvidenceForLog = async ({ log, user, imageData, sessionType, violationType, riskLevel, confidence }) => {
@@ -213,26 +257,64 @@ const normalizePagination = (page, limit) => {
 // ─── Route handlers ─────────────────────────────────────────────────────────
 
 /**
- * GET /malpractice/check-lock?sessionType=assessment|diagnostic
+ * GET /malpractice/check-lock?sessionType=assessment|coding|diagnostic&problemId=xxx
  * Returns the lock state for the specific session type only.
+ * For coding sessions, if problemId is provided, checks per-problem lock.
  */
 const checkLockStatus = async (req, res, next) => {
   try {
     const sessionType = ALLOWED_SESSION_TYPES.has(req.query.sessionType)
       ? req.query.sessionType
       : 'assessment';
+    const problemId = req.query.problemId;
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const lockState = buildLockResponse(user, sessionType);
+    let lockState;
 
-    // Auto-clear expired locks in the DB.
-    if (!lockState.isLocked) {
-      const field = LOCK_FIELD[sessionType];
-      if (user[field]?.isLocked) {
-        clearLock(user, sessionType);
+    // For coding sessions with problemId, check per-problem lock
+    if (sessionType === 'coding' && problemId) {
+      const problemLocks = user?.codingProblemLocks || new Map();
+      const lock = problemLocks.get(problemId) || {};
+      const lockedUntilTime = lock.lockedUntil ? new Date(lock.lockedUntil).getTime() : 0;
+      const now = Date.now();
+      const active = Boolean(lock.isLocked && lockedUntilTime > now);
+      const timeRemainingMs = active ? Math.max(0, lockedUntilTime - now) : 0;
+
+      lockState = {
+        isLocked: active,
+        lockedUntil: active ? lock.lockedUntil : null,
+        timeRemainingMs,
+        timeRemainingFormatted: active ? formatDuration(timeRemainingMs) : '0h 0m 0s',
+        lockReason: active ? (lock.lockReason || '') : '',
+        lockCount: Number(lock.lockCount || 0),
+        sessionType,
+        problemId,
+      };
+
+      // Auto-clear expired per-problem locks in the DB.
+      if (!lockState.isLocked && lock.isLocked) {
+        problemLocks.set(problemId, {
+          isLocked: false,
+          lockedUntil: null,
+          lockReason: '',
+          lockCount: Number(lock.lockCount || 0),
+        });
+        user.codingProblemLocks = problemLocks;
         await user.save();
+      }
+    } else {
+      // Use global lock for non-coding or coding without problemId
+      lockState = buildLockResponse(user, sessionType);
+
+      // Auto-clear expired locks in the DB.
+      if (!lockState.isLocked) {
+        const field = LOCK_FIELD[sessionType];
+        if (user[field]?.isLocked) {
+          clearLock(user, sessionType);
+          await user.save();
+        }
       }
     }
 
@@ -354,15 +436,16 @@ const reportViolation = async (req, res, next) => {
       riskScore: normalizedConfidence,
       flags: [String(violationType).toUpperCase()],
       reasons: [String(violationType).replace(/_/g, ' ')],
-      sourceFlags: ['browser', 'vision'],
+      sourceFlags: getSourceFlagsForViolation(violationType),
       finalFlagged: lockApplied,
       warningCount: Number(warningNumber || 0),
-      warningLimit: violationType === 'copy_attempt' ? 5 : 3,
+      warningLimit: LOCK_WARNING_LIMIT,
       sessionData: normalizedSessionData,
       hasEvidence: false,
       evidenceCount: 0,
       latestEvidenceAt: null,
       latestEvidenceTrigger: '',
+      resolvedAt: null,
     };
 
     if (topicId && mongoose.Types.ObjectId.isValid(topicId)) {
@@ -389,9 +472,13 @@ const reportViolation = async (req, res, next) => {
       user[field] = {
         isLocked: true,
         lockedUntil: new Date(now + LOCK_DURATION_MS),
-        lockReason: violationType,
+        lockReason: violationType, // Store the violation type that caused the lock
         lockCount: Number(user[field]?.lockCount || 0) + 1,
       };
+    } else if (currentLock.isLocked) {
+      // Update lock reason even if already locked to reflect the latest violation
+      const field = LOCK_FIELD[resolvedSessionType];
+      user[field].lockReason = violationType;
     }
 
     await Promise.all([log.save(), user.save()]);
@@ -432,15 +519,23 @@ const unlockStudent = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Student not found' });
     }
 
-    if (sessionType && ALLOWED_SESSION_TYPES.has(sessionType)) {
-      clearLock(student, sessionType);
+    const resolvedSessionType = sessionType && ALLOWED_SESSION_TYPES.has(sessionType)
+      ? sessionType
+      : '';
+
+    if (resolvedSessionType) {
+      clearLock(student, resolvedSessionType);
     } else {
-      // If no sessionType specified, unlock both.
+      // If no sessionType specified, unlock all monitored areas.
       clearLock(student, 'assessment');
+      clearLock(student, 'coding');
       clearLock(student, 'diagnostic');
     }
 
-    await student.save();
+    await Promise.all([
+      student.save(),
+      resolveMalpracticeLogs(student._id, resolvedSessionType),
+    ]);
     return res.json({ success: true, message: 'Student unlocked' });
   } catch (error) {
     return next(error);
@@ -479,32 +574,78 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
     const [totalCount, logs] = await Promise.all([
       MalpracticeLog.countDocuments(query),
       MalpracticeLog.find(query)
-        .populate('userId', 'name username email assessmentLock diagnosticLock')
+        .populate('userId', 'name username email')
         .sort({ createdAt: -1, _id: -1 })
         .skip(paging.skip)
         .limit(paging.limit)
         .lean(),
     ]);
 
+    // Fetch user lock data separately to ensure lock fields are included
+    const userIds = logs.map(log => log.userId?._id).filter(Boolean);
+    const usersWithLocks = userIds.length 
+      ? await User.find({ _id: { $in: userIds } })
+          .select('_id name username email assessmentLock codingLock diagnosticLock')
+          .lean()
+      : [];
+    
+    const userLockMap = new Map(usersWithLocks.map(u => [String(u._id), u]));
+    
+    // Merge lock data into logs
+    logs.forEach(log => {
+      if (log.userId?._id && userLockMap.has(String(log.userId._id))) {
+        log.userId = { ...log.userId, ...userLockMap.get(String(log.userId._id)) };
+      }
+    });
+
     const logIds = logs.map((log) => log._id);
-    const latestEvidence = logIds.length
+    const sessionIds = logs.map((log) => log.monitoringSessionId).filter(Boolean);
+    
+    // Query evidence by monitoringSessionId to capture all evidence for the session
+    const latestEvidence = sessionIds.length
       ? await MonitoringEvidence.aggregate([
-          { $match: { malpracticeLogId: { $in: logIds } } },
+          { $match: { monitoringSessionId: { $in: sessionIds } } },
           { $sort: { capturedAt: -1, _id: -1 } },
-          { $group: { _id: '$malpracticeLogId', evidenceId: { $first: '$_id' }, capturedAt: { $first: '$capturedAt' } } },
+          { $group: { _id: '$monitoringSessionId', evidenceId: { $first: '$_id' }, capturedAt: { $first: '$capturedAt' } } },
         ])
       : [];
 
+    // Create evidence map with monitoringSessionId as key
     const evidenceMap = new Map(latestEvidence.map((item) => [String(item._id), item]));
     const nowTs = Date.now();
 
     const responseLogs = logs.map((log) => {
-      // Determine which lock field is relevant for this log's session type.
-      const relevantLock = log.sessionType === 'diagnostic'
-        ? (log.userId?.diagnosticLock || {})
-        : (log.userId?.assessmentLock || {});
+      // Check if user is locked in the SAME session type as this log
+      const diagnosticLock = log.userId?.diagnosticLock || {};
+      const codingLock = log.userId?.codingLock || {};
+      const assessmentLock = log.userId?.assessmentLock || {};
+      
+      const diagnosticLocked = Boolean(diagnosticLock.isLocked && new Date(diagnosticLock.lockedUntil).getTime() > nowTs);
+      const codingLocked = Boolean(codingLock.isLocked && new Date(codingLock.lockedUntil).getTime() > nowTs);
+      const assessmentLocked = Boolean(assessmentLock.isLocked && new Date(assessmentLock.lockedUntil).getTime() > nowTs);
+      
+      // Find the actual active lock to show details for (matching the log's session type)
+      let relevantLock = {};
+      if (log.sessionType === 'diagnostic') {
+        relevantLock = diagnosticLock;
+      } else if (log.sessionType === 'coding') {
+        relevantLock = codingLock;
+      } else {
+        relevantLock = assessmentLock;
+      }
       const lockedUntilTime = relevantLock.lockedUntil ? new Date(relevantLock.lockedUntil).getTime() : 0;
-      const evidence = evidenceMap.get(String(log._id));
+      const relevantLockActive = Boolean(relevantLock.isLocked && lockedUntilTime > nowTs);
+      // Derive resultedInLock from the lock state instead of relying on database field
+      const resultedInLock = Boolean(relevantLockActive || log.resultedInLock);
+      const isLocked = Boolean(resultedInLock && !log.resolvedAt && relevantLockActive);
+      // Get evidence by monitoringSessionId
+      const evidence = log.monitoringSessionId ? evidenceMap.get(String(log.monitoringSessionId)) : null;
+
+      // Show lock reason based on the actual violation that caused the lock
+      // Always use the log's violation type for unique lock reasons per violation
+      const lockReasonToShow = log.violationType ? `${log.violationType} detected` : 'Malpractice detected';
+
+      console.log('[MalpracticeController] Log:', log._id, 'resultedInLock:', resultedInLock, 'relevantLockActive:', relevantLockActive, 'isLocked:', isLocked, 'lockReason:', lockReasonToShow);
 
       return {
         _id: log._id,
@@ -518,7 +659,8 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
         confidence: Number(log.confidence || 0),
         detectedObject: log.detectedObject || '',
         riskLevel: log.riskLevel,
-        resultedInLock: Boolean(log.resultedInLock),
+        resultedInLock: resultedInLock,
+        resolvedAt: log.resolvedAt || null,
         warningNumber: Number(log.warningNumber || log.warningCount || 0),
         createdAt: log.createdAt,
         sessionType: log.sessionType,
@@ -527,9 +669,9 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
         evidenceCount: Number(log.evidenceCount || 0),
         latestEvidenceId: evidence?.evidenceId || null,
         latestEvidenceAt: evidence?.capturedAt || log.latestEvidenceAt || null,
-        isCurrentlyLocked: Boolean(relevantLock.isLocked && lockedUntilTime > nowTs),
-        lockedUntil: relevantLock.lockedUntil || null,
-        lockReason: relevantLock.lockReason || '',
+        isCurrentlyLocked: isLocked,
+        lockedUntil: isLocked ? relevantLock.lockedUntil : null,
+        lockReason: lockReasonToShow,
         lockCount: Number(relevantLock.lockCount || 0),
       };
     });
@@ -568,6 +710,7 @@ const getInstitutionMalpracticeStats = async (req, res, next) => {
         institutionId,
         $or: [
           { 'assessmentLock.isLocked': true, 'assessmentLock.lockedUntil': { $gt: now } },
+          { 'codingLock.isLocked': true, 'codingLock.lockedUntil': { $gt: now } },
           { 'diagnosticLock.isLocked': true, 'diagnosticLock.lockedUntil': { $gt: now } },
         ],
       }),
@@ -615,10 +758,141 @@ const getInstitutionMalpracticeStats = async (req, res, next) => {
   }
 };
 
+
+/**
+ * GET /institution/malpractice/locked-students
+ * Returns list of currently locked students for the institution
+ */
+const getLockedStudents = async (req, res, next) => {
+  try {
+    const institutionId = req.institution._id;
+    const now = new Date();
+
+    const lockedStudents = await User.find({
+      institutionId,
+      $or: [
+        { 'assessmentLock.isLocked': true, 'assessmentLock.lockedUntil': { $gt: now } },
+        { 'codingLock.isLocked': true, 'codingLock.lockedUntil': { $gt: now } },
+        { 'diagnosticLock.isLocked': true, 'diagnosticLock.lockedUntil': { $gt: now } },
+      ],
+    })
+    .select('_id name username email assessmentLock codingLock diagnosticLock')
+    .lean();
+
+    // Get latest evidence for each locked student, filtered by session type and lock time
+    const studentIds = lockedStudents.map(s => s._id);
+    
+    // Build a map of student to their active lock info
+    const studentLockInfo = new Map();
+    lockedStudents.forEach((student) => {
+      const nowTs = Date.now();
+      const diagnosticLocked = Boolean(student.diagnosticLock?.isLocked && new Date(student.diagnosticLock.lockedUntil).getTime() > nowTs);
+      const codingLocked = Boolean(student.codingLock?.isLocked && new Date(student.codingLock.lockedUntil).getTime() > nowTs);
+      const assessmentLocked = Boolean(student.assessmentLock?.isLocked && new Date(student.assessmentLock.lockedUntil).getTime() > nowTs);
+
+      let activeLock = null;
+      let activeSessionType = null;
+      if (diagnosticLocked) {
+        activeLock = student.diagnosticLock;
+        activeSessionType = 'diagnostic';
+      } else if (codingLocked) {
+        activeLock = student.codingLock;
+        activeSessionType = 'coding';
+      } else if (assessmentLocked) {
+        activeLock = student.assessmentLock;
+        activeSessionType = 'assessment';
+      }
+
+      if (activeLock && activeSessionType) {
+        studentLockInfo.set(String(student._id), {
+          activeLock,
+          activeSessionType,
+          lockedUntilTime: activeLock?.lockedUntil ? new Date(activeLock.lockedUntil).getTime() : 0,
+        });
+      }
+    });
+
+    // Get latest evidence for each student
+    const latestEvidence = studentIds.length
+      ? await MonitoringEvidence.aggregate([
+          { 
+            $match: { 
+              userId: { $in: studentIds }, 
+              institutionId,
+            } 
+          },
+          { $sort: { capturedAt: -1, _id: -1 } },
+          { $group: { _id: '$userId', evidenceId: { $first: '$_id' }, capturedAt: { $first: '$capturedAt' }, triggerCode: { $first: '$triggerCode' } } },
+        ])
+      : [];
+
+    // Create evidence map
+    const evidenceMap = new Map();
+    latestEvidence.forEach((e) => {
+      evidenceMap.set(String(e._id), {
+        evidenceId: e.evidenceId,
+        capturedAt: e.capturedAt,
+        triggerCode: e.triggerCode,
+      });
+    });
+
+    const responseStudents = lockedStudents.map((student) => {
+      const nowTs = Date.now();
+      const diagnosticLocked = Boolean(student.diagnosticLock?.isLocked && new Date(student.diagnosticLock.lockedUntil).getTime() > nowTs);
+      const codingLocked = Boolean(student.codingLock?.isLocked && new Date(student.codingLock.lockedUntil).getTime() > nowTs);
+      const assessmentLocked = Boolean(student.assessmentLock?.isLocked && new Date(student.assessmentLock.lockedUntil).getTime() > nowTs);
+
+      // Find which lock is active
+      let activeLock = null;
+      let activeSessionType = null;
+      if (diagnosticLocked) {
+        activeLock = student.diagnosticLock;
+        activeSessionType = 'diagnostic';
+      } else if (codingLocked) {
+        activeLock = student.codingLock;
+        activeSessionType = 'coding';
+      } else if (assessmentLocked) {
+        activeLock = student.assessmentLock;
+        activeSessionType = 'assessment';
+      }
+
+      const lockedUntilTime = activeLock?.lockedUntil ? new Date(activeLock.lockedUntil).getTime() : 0;
+      const timeRemainingMs = lockedUntilTime > nowTs ? lockedUntilTime - nowTs : 0;
+      const evidence = evidenceMap.get(String(student._id));
+
+      return {
+        _id: student._id,
+        name: student.name || student.username || 'Unknown Student',
+        username: student.username || '',
+        email: student.email || '',
+        activeSessionType,
+        lockedUntil: activeLock?.lockedUntil || null,
+        timeRemainingMs,
+        timeRemainingFormatted: formatDuration(timeRemainingMs),
+        lockReason: activeLock?.lockReason || '',
+        lockCount: Number(activeLock?.lockCount || 0),
+        hasEvidence: Boolean(evidence),
+        latestEvidenceId: evidence?.evidenceId || null,
+        latestEvidenceAt: evidence?.capturedAt || null,
+        triggerCode: evidence?.triggerCode || '',
+      };
+    });
+
+    return res.json({
+      success: true,
+      lockedStudents: responseStudents,
+      count: responseStudents.length,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 module.exports = {
   checkLockStatus,
   getInstitutionMalpracticeLogs,
   getInstitutionMalpracticeStats,
   reportViolation,
   unlockStudent,
+  getLockedStudents,
 };

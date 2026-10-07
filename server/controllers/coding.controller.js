@@ -6,6 +6,7 @@ const CodingDiscussionReply = require('../models/CodingDiscussionReply');
 const PerformanceLog = require('../models/PerformanceLog');
 const Progress = require('../models/Progress');
 const User = require('../models/User');
+const MonitoringSession = require('../models/MonitoringSession');
 const {
   COURSE_ORDER,
   buildProgressionForUser,
@@ -16,6 +17,8 @@ const { syncRoadmapForUser } = require('../services/roadmapGenerator');
 const { judgeJavaSubmission } = require('../services/codeJudge');
 const { calculateMasteryScore } = require('../services/scoreCalculator');
 const { logActivity } = require('../services/streakService');
+const mlService = require('../services/mlService');
+const { finalizeSession } = require('../services/monitoringService');
 
 const canAccessCodingWithoutMcq = (user, topicState) => {
   if (!topicState?.topic) return false;
@@ -28,7 +31,97 @@ const canAccessCodingWithoutMcq = (user, topicState) => {
   return COURSE_ORDER.indexOf(topicLevel) < COURSE_ORDER.indexOf(learnerLevel);
 };
 
+const getActiveCodingLock = async (user, problemId = null) => {
+  // If problemId is provided, check per-problem lock
+  if (problemId) {
+    const problemLocks = user?.codingProblemLocks || new Map();
+    const lock = problemLocks.get(problemId) || {};
+    const lockedUntilTime = lock.lockedUntil ? new Date(lock.lockedUntil).getTime() : 0;
+    const now = Date.now();
+    const isActive = Boolean(lock.isLocked && lockedUntilTime > now);
+
+    if (isActive) {
+      return {
+        isLocked: true,
+        lockedUntil: lock.lockedUntil,
+        lockReason: lock.lockReason || '',
+        lockCount: Number(lock.lockCount || 0),
+        sessionType: 'coding',
+        problemId,
+      };
+    }
+
+    if (lock.isLocked) {
+      // Clean up expired lock
+      problemLocks.set(problemId, {
+        isLocked: false,
+        lockedUntil: null,
+        lockReason: '',
+        lockCount: Number(lock.lockCount || 0),
+      });
+      await User.findByIdAndUpdate(user._id, {
+        $set: { codingProblemLocks: problemLocks },
+      });
+    }
+
+    return {
+      isLocked: false,
+      lockedUntil: null,
+      lockReason: '',
+      lockCount: Number(lock.lockCount || 0),
+      sessionType: 'coding',
+      problemId,
+    };
+  }
+
+  // Fall back to global coding lock for backward compatibility
+  const lock = user?.codingLock || {};
+  const lockedUntilTime = lock.lockedUntil ? new Date(lock.lockedUntil).getTime() : 0;
+  const now = Date.now();
+  const isActive = Boolean(lock.isLocked && lockedUntilTime > now);
+
+  if (isActive) {
+    return {
+      isLocked: true,
+      lockedUntil: lock.lockedUntil,
+      lockReason: lock.lockReason || '',
+      lockCount: Number(lock.lockCount || 0),
+      sessionType: 'coding',
+    };
+  }
+
+  if (lock.isLocked) {
+    user.codingLock = {
+      isLocked: false,
+      lockedUntil: null,
+      lockReason: '',
+      lockCount: Number(lock.lockCount || 0),
+    };
+    await User.findByIdAndUpdate(user._id, {
+      $set: { codingLock: user.codingLock },
+    });
+  }
+
+  return {
+    isLocked: false,
+    lockedUntil: null,
+    lockReason: '',
+    lockCount: Number(lock.lockCount || 0),
+    sessionType: 'coding',
+  };
+};
+
 const buildAccessState = async (user, topicId) => {
+  const codingLock = await getActiveCodingLock(user);
+  if (codingLock.isLocked) {
+    return {
+      allowed: false,
+      status: 423,
+      lockReason: 'Coding access is temporarily locked due to repeated malpractice warnings.',
+      lockState: codingLock,
+    };
+  }
+
   const progression = await buildProgressionForUser(user);
   const topicState = getTopicProgressionState(progression, topicId);
 
@@ -69,10 +162,17 @@ const buildAccessState = async (user, topicId) => {
     allowed: true,
     status: 200,
     lockReason: '',
+    lockState: codingLock,
     topicState,
     progress,
   };
 };
+
+const sendAccessError = (res, access) => res.status(access.status).json({
+  success: false,
+  message: access.lockReason,
+  ...(access.lockState || {}),
+});
 
 const serializeSubmission = (submission) => ({
   _id: submission._id,
@@ -273,6 +373,7 @@ const markAcceptedProgress = async (user, problem, alreadySolved = false) => {
 
 const getCodingHub = async (req, res, next) => {
   try {
+    const codingLock = await getActiveCodingLock(req.user);
     const [progression, problems, workspaces, progresses] = await Promise.all([
       buildProgressionForUser(req.user),
       CodingProblem.find({
@@ -295,6 +396,24 @@ const getCodingHub = async (req, res, next) => {
     );
 
     const items = problems.map((problem) => {
+      if (codingLock.isLocked) {
+        return {
+          _id: problem._id,
+          title: problem.title,
+          difficulty: problem.difficulty,
+          topicId: problem.topicId?._id || problem.topicId,
+          topicTitle: problem.topicId?.title || 'Unknown Topic',
+          moduleId: problem.moduleId?._id || problem.moduleId,
+          moduleTitle: problem.moduleId?.title || 'Unknown Module',
+          courseLevel: problem.topicId?.courseLevel || problem.moduleId?.difficulty || 'Beginner',
+          points: problem.points || 0,
+          timeLimit: problem.timeLimit || 30,
+          state: 'locked',
+          lockReason: 'Coding access is temporarily locked due to repeated malpractice warnings.',
+          solved: false,
+        };
+      }
+
       const topicState = getTopicProgressionState(progression, problem.topicId?._id || problem.topicId);
       const progress = progressByTopicId.get(String(problem.topicId?._id || problem.topicId));
       const workspace = workspaceByProblemId.get(String(problem._id));
@@ -338,6 +457,7 @@ const getCodingHub = async (req, res, next) => {
       success: true,
       data: {
         problems: items,
+        codingLock,
       },
     });
   } catch (err) {
@@ -364,7 +484,7 @@ const getCodingProblemById = async (req, res, next) => {
 
     const access = await buildAccessState(req.user, problem.topicId?._id || problem.topicId);
     if (!access.allowed) {
-      return res.status(access.status).json({ success: false, message: access.lockReason });
+      return sendAccessError(res, access);
     }
 
     const detail = await serializeProblemDetail(problem, req.user._id);
@@ -388,7 +508,7 @@ const getCodingProblemByTopic = async (req, res, next) => {
 
     const access = await buildAccessState(req.user, req.params.topicId);
     if (!access.allowed) {
-      return res.status(access.status).json({ success: false, message: access.lockReason });
+      return sendAccessError(res, access);
     }
 
     res.status(200).json({ success: true, data: { problem } });
@@ -408,7 +528,7 @@ const updateWorkspaceDraft = async (req, res, next) => {
 
     const access = await buildAccessState(req.user, problem.topicId);
     if (!access.allowed) {
-      return res.status(access.status).json({ success: false, message: access.lockReason });
+      return sendAccessError(res, access);
     }
 
     const workspace = await upsertWorkspace({
@@ -435,7 +555,7 @@ const updateWorkspaceDraft = async (req, res, next) => {
 
 const runCodingProblem = async (req, res, next) => {
   try {
-    const { code } = req.body;
+    const { code, monitoringSessionId, sessionData } = req.body;
     const problem = await CodingProblem.findOne({
       _id: req.params.problemId,
       isActive: true,
@@ -448,7 +568,7 @@ const runCodingProblem = async (req, res, next) => {
 
     const access = await buildAccessState(req.user, problem.topicId);
     if (!access.allowed) {
-      return res.status(access.status).json({ success: false, message: access.lockReason });
+      return sendAccessError(res, access);
     }
 
     const sourceCode = String(code || '').trim() || problem.javaStarterCode || '';
@@ -486,9 +606,59 @@ const runCodingProblem = async (req, res, next) => {
       }),
     ]);
 
+    // Finalize monitoring session if provided
+    let monitoringSummary = null;
+    if (monitoringSessionId) {
+      try {
+        const monitoringSession = await MonitoringSession.findOne({
+          _id: monitoringSessionId,
+          userId: req.user._id,
+          sessionType: 'coding',
+        });
+
+        if (monitoringSession) {
+          await finalizeSession(monitoringSession, {
+            problemId: problem._id,
+            topicId: problem.topicId,
+            moduleId: problem.moduleId,
+            browserMetrics: sessionData || {},
+          });
+
+          monitoringSummary = {
+            monitoringSessionId: monitoringSession._id,
+            warningCount: monitoringSession.warningCount || 0,
+            warningLimit: monitoringSession.warningLimit || 0,
+            finalFlagged: !!monitoringSession.finalFlagged,
+            riskLevel: monitoringSession.riskLevel || 'NONE',
+            signals: monitoringSession.signals || [],
+          };
+        }
+      } catch (monitoringErr) {
+        console.error('Monitoring session finalization failed (run):', monitoringErr);
+      }
+    }
+
+    // Optional: proctor analysis if a frame was provided
+    let proctorResult = null;
+    try {
+      if (sessionData && sessionData.proctorImage) {
+        const proctorPayload = {
+          imageData: sessionData.proctorImage,
+          metadata: {
+            userId: String(req.user._id),
+            sessionType: 'coding',
+            problemId: String(problem._id),
+          },
+        };
+        proctorResult = await mlService.analyzeProctorFrame(proctorPayload);
+      }
+    } catch (e) {
+      console.error('Proctor analysis (run) failed:', e?.message || e);
+    }
     res.status(200).json({
       success: true,
       data: result,
+      monitoring: monitoringSummary || (proctorResult ? { proctor: proctorResult } : undefined),
     });
   } catch (err) {
     next(err);
@@ -497,7 +667,7 @@ const runCodingProblem = async (req, res, next) => {
 
 const submitCodingProblem = async (req, res, next) => {
   try {
-    const { code } = req.body;
+    const { code, monitoringSessionId, sessionData } = req.body;
     const problem = await CodingProblem.findOne({
       _id: req.params.problemId,
       isActive: true,
@@ -510,7 +680,7 @@ const submitCodingProblem = async (req, res, next) => {
 
     const access = await buildAccessState(req.user, problem.topicId);
     if (!access.allowed) {
-      return res.status(access.status).json({ success: false, message: access.lockReason });
+      return sendAccessError(res, access);
     }
 
     const sourceCode = String(code || '').trim() || problem.javaStarterCode || '';
@@ -557,6 +727,55 @@ const submitCodingProblem = async (req, res, next) => {
       }),
     ]);
 
+    // Finalize monitoring session if provided
+    let monitoringSummary = null;
+    if (monitoringSessionId) {
+      try {
+        const monitoringSession = await MonitoringSession.findOne({
+          _id: monitoringSessionId,
+          userId: req.user._id,
+          sessionType: 'coding',
+        });
+
+        if (monitoringSession) {
+          await finalizeSession(monitoringSession, {
+            problemId: problem._id,
+            topicId: problem.topicId,
+            moduleId: problem.moduleId,
+            browserMetrics: sessionData || {},
+          });
+
+          monitoringSummary = {
+            monitoringSessionId: monitoringSession._id,
+            warningCount: monitoringSession.warningCount || 0,
+            warningLimit: monitoringSession.warningLimit || 0,
+            finalFlagged: !!monitoringSession.finalFlagged,
+            riskLevel: monitoringSession.riskLevel || 'NONE',
+            signals: monitoringSession.signals || [],
+          };
+        }
+      } catch (monitoringErr) {
+        console.error('Monitoring session finalization failed (submit):', monitoringErr);
+      }
+    }
+
+    // Optional: proctor analysis for submission
+    let proctorResult = null;
+    try {
+      if (sessionData && sessionData.proctorImage) {
+        const proctorPayload = {
+          imageData: sessionData.proctorImage,
+          metadata: {
+            userId: String(req.user._id),
+            sessionType: 'coding_submit',
+            problemId: String(problem._id),
+          },
+        };
+        proctorResult = await mlService.analyzeProctorFrame(proctorPayload);
+      }
+    } catch (e) {
+      console.error('Proctor analysis (submit) failed:', e?.message || e);
+    }
     if (accepted) {
       await markAcceptedProgress(req.user, problem, !!existingWorkspace?.solved);
     }
@@ -565,6 +784,7 @@ const submitCodingProblem = async (req, res, next) => {
       success: true,
       data: result,
       message: accepted ? 'Accepted' : result.verdict,
+      monitoring: monitoringSummary || (proctorResult ? { proctor: proctorResult } : undefined),
     });
   } catch (err) {
     next(err);

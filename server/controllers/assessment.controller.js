@@ -11,17 +11,19 @@ const {
   generateRoadmap,
   syncRoadmapForUser,
 } = require('../services/roadmapGenerator');
+const mlService = require('../services/mlService');
 const {
   classifyLevel,
   detectWeakAreas,
   getReadinessScore,
   normalizeLevelFromScore,
   buildDiagnosticPerformanceData,
-} = require('../services/mlService');
+} = mlService;
 const {
   calculateAssessmentScore,
   evaluatePass,
   calculateMasteryScore,
+  normalizeTopicToModule,
 } = require('../services/scoreCalculator');
 const { inferPlacementReadiness } = require('../services/userReadinessService');
 const { logActivity } = require('../services/streakService');
@@ -348,6 +350,26 @@ const submitAssessment = async (req, res, next) => {
       }
     }
 
+    // ── Proctor frame analysis (optional) ─────────────────
+    try {
+      if (sessionData && sessionData.proctorImage) {
+        const proctorPayload = {
+          imageData: sessionData.proctorImage,
+          metadata: {
+            userId: String(req.user._id),
+            sessionType: 'assessment',
+            topicId: topicId || null,
+            moduleId: moduleId || null,
+          },
+        };
+        const proctor = await mlService.analyzeProctorFrame(proctorPayload);
+        monitoringSummary = monitoringSummary || {};
+        monitoringSummary.proctor = proctor;
+      }
+    } catch (proErr) {
+      console.error('Proctor analysis failed:', proErr?.message || proErr);
+    }
+
     // ── ML integration: weak areas & readiness (non‑blocking) ──
     (async () => {
       try {
@@ -370,7 +392,11 @@ const submitAssessment = async (req, res, next) => {
 
         const topicMasteryMap = {};
         allProgress.forEach(p => {
-          topicMasteryMap[p.topicId.title.toLowerCase()] = p.masteryScore;
+          const normalizedKey = normalizeTopicToModule(p.topicId.title);
+          // Use the highest mastery score if multiple topics map to same module
+          if (!topicMasteryMap[normalizedKey] || p.masteryScore > topicMasteryMap[normalizedKey]) {
+            topicMasteryMap[normalizedKey] = p.masteryScore;
+          }
         });
         const readiness = await getReadinessScore(topicMasteryMap);
 

@@ -7,6 +7,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "seed": "node seed/index.js",
+    "seed:fresh": "node seed/index.js --fresh",
+    "db:check": "node test_db.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

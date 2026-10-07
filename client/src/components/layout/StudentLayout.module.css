@@ -70,14 +70,90 @@
   transform: translateX(0);
 }
 
+.sidebarStatic {
+  position: sticky !important;
+  top: 0 !important;
+  left: 0 !important;
+  transform: none !important;
+  height: 100vh !important;
+  width: 280px !important;
+  box-shadow: none !important;
+  animation: none !important;
+  z-index: auto !important;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
 @media (min-width: 768px) {
   .sidebar {
-    position: static;
-    top: 0;
-    transform: none;
-    height: auto;
-    position: static !important;   /* ← this was missing */
-    transform: none !important;    /* ← this was missing */
+    position: sticky !important;
+    top: 0 !important;
+    left: 0 !important;
+    transform: none !important;
+    height: 100vh !important;
+    width: 280px !important;
+    box-shadow: none !important;
+    animation: none !important;
+    z-index: auto !important;
+    overflow-y: auto;
+  }
+  
+  .sidebarOpen {
+    transform: none !important;
+  }
+  
+  /* Remove all hover transforms on larger screens to keep content completely static */
+  .navLink:hover {
+    transform: none !important;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  
+  .navLink:hover::before {
+    height: 60%;
+  }
+  
+  .navLinkActive:hover {
+    transform: none !important;
+  }
+  
+  .avatar:hover {
+    transform: none !important;
+    box-shadow: 
+      0 0 20px rgba(99, 102, 241, 0.3),
+      0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+  
+  .logoWrapper:hover {
+    transform: none !important;
+  }
+  
+  .logoutBtn:hover {
+    transform: none !important;
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    box-shadow: 0 8px 25px rgba(239, 68, 68, 0.2);
+  }
+  
+  .logoutBtn:active {
+    transform: none !important;
+  }
+  
+  .levelBadge:hover {
+    transform: none !important;
+  }
+  
+  .navIcon {
+    transition: none !important;
+  }
+  
+  .navLink:hover .navIcon {
+    transform: none !important;
+  }
+  
+  /* Disable all animations on sidebar for larger screens */
+  .sidebar * {
+    animation: none !important;
   }
 }
 
@@ -497,6 +573,13 @@
   flex-direction: column;
   min-width: 0;
   position: relative;
+  overflow-x: hidden;
+}
+
+@media (min-width: 768px) {
+  .main {
+    margin-left: 0;
+  }
 }
 
 /* ═══════════════════════════════════════════════

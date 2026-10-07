@@ -20,6 +20,13 @@ export const startMonitoringSession = async (payload) => {
   return data.data;
 };
 
+export const getMonitoringReadiness = async (sessionType) => {
+  const { data } = await api.get('/monitoring/readiness', {
+    params: sessionType ? { sessionType } : undefined,
+  });
+  return data.data;
+};
+
 export const recordMonitoringEvents = async (sessionId, payload) => {
   const { data } = await api.post(`/monitoring/sessions/${sessionId}/events`, payload);
   return data.data;
@@ -28,6 +35,11 @@ export const recordMonitoringEvents = async (sessionId, payload) => {
 export const analyzeMonitoringFrame = async (sessionId, payload) => {
   const { data } = await api.post(`/monitoring/sessions/${sessionId}/analyze-frame`, payload);
   return data.data;
+};
+
+export const reportMonitoringFallbackViolation = async (payload) => {
+  const { data } = await api.post('/malpractice/report-violation', payload);
+  return data;
 };
 
 export const finishMonitoringSession = async (sessionId, payload, options = {}) => {

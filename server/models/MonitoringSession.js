@@ -104,7 +104,7 @@ const monitoringSessionSchema = new mongoose.Schema(
     },
     finalStatus: {
       type: String,
-      enum: ['clean', 'warned', 'flagged', 'reviewed', 'dismissed', 'confirmed'],
+      enum: ['clean', 'limited', 'warned', 'flagged', 'reviewed', 'dismissed', 'confirmed'],
       default: 'clean',
     },
     deviceType: {
@@ -167,6 +167,10 @@ const monitoringSessionSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.Mixed,
         default: {},
       },
+    },
+    visionAlertState: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     evidenceCaptureState: {
       type: Map,
