@@ -663,6 +663,7 @@ const analyzeMonitoringFrame = async (req, res, next) => {
         evidenceTrigger: evidenceResult?.evidenceTrigger || null,
         evidenceCount: Number(evidenceResult?.evidenceCount || 0),
         modelSource,
+        mlFallback: Boolean(result?.fallback),
         ...lockState,
       }),
     });

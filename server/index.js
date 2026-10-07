@@ -30,7 +30,9 @@ const app = express();
 // Middleware
 // ─────────────────────────────────────────────────
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+// Camera frames and evidence images need larger bodies; keep the default limit elsewhere.
+app.use(['/api/monitoring', '/api/malpractice'], express.json({ limit: '5mb' }));
+app.use(express.json());
 
 // ─────────────────────────────────────────────────
 // Routes
@@ -57,6 +59,12 @@ app.use('/api/institution/malpractice', malpracticeRoutes.institutionRouter);
 
 // Global error handler – prints ANY error value
 app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ success: false, message: 'Request body is too large' });
+  }
+  if (err?.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, message: 'Malformed JSON body' });
+  }
   if (err?.name === 'CastError') {
     return res.status(400).json({ success: false, message: `Invalid ${err.path || 'identifier'}` });
   }
