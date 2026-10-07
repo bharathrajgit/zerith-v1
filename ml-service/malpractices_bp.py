@@ -9,7 +9,12 @@ from dotenv import load_dotenv
 # Add malpractices directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'malpractices'))
 
-from malpractices_pipeline import MalpracticesPipeline
+try:
+    from malpractices_pipeline import MalpracticesPipeline
+    PIPELINE_IMPORT_ERROR = ''
+except Exception as import_error:  # noqa: BLE001 - optional pipeline
+    MalpracticesPipeline = None
+    PIPELINE_IMPORT_ERROR = str(import_error)
 
 load_dotenv()
 
@@ -20,10 +25,36 @@ pipeline = None
 
 def get_pipeline():
     global pipeline
+    if MalpracticesPipeline is None:
+        return None
     if pipeline is None:
         device = 'cuda' if os.environ.get('USE_CUDA', 'false').lower() == 'true' else 'cpu'
         pipeline = MalpracticesPipeline(device=device)
     return pipeline
+
+def _fallback_frame_result(frame, reason):
+    return {
+        'detections': {
+            'phoneVisible': False,
+            'headPoseAway': False,
+            'faceMissing': False,
+            'multipleFaces': False,
+            'extraScreenVisible': False,
+            'faceCount': 1,
+        },
+        'alerts': [],
+        'signals': [],
+        'riskLevel': 'LOW',
+        'riskScore': 0,
+        'confidence': 0,
+        'frameSize': {'width': int(frame.shape[1]), 'height': int(frame.shape[0])},
+        'fallback': True,
+        'metadata': {
+            'modelSource': 'heuristic',
+            'modelLoaded': False,
+            'message': f'Malpractices pipeline unavailable: {reason}',
+        },
+    }
 
 @malpractices_bp.route('/analyze-frame', methods=['POST'])
 def analyze_frame():
@@ -54,6 +85,8 @@ def analyze_frame():
         
         # Process frame
         pipe = get_pipeline()
+        if pipe is None:
+            return jsonify({'success': True, 'data': _fallback_frame_result(frame, PIPELINE_IMPORT_ERROR)})
         results = pipe.process_frame(frame)
         
         # Convert results to API format
@@ -164,15 +197,25 @@ def health():
     """Check if malpractices pipeline is ready."""
     try:
         pipe = get_pipeline()
-        return jsonify({
-            'success': True,
-            'ready': True,
-            'modelLoaded': True,
-            'supportsPhoneDetection': True,
-            'supportsHeadPoseDetection': True,
-            'supportsFaceDetection': True,
-            'message': 'Malpractices pipeline is ready'
-        })
+        if pipe is None:
+            status = {
+                'ready': False,
+                'modelLoaded': False,
+                'supportsPhoneDetection': False,
+                'supportsHeadPoseDetection': False,
+                'supportsFaceDetection': False,
+                'message': f'Malpractices pipeline unavailable: {PIPELINE_IMPORT_ERROR}',
+            }
+        else:
+            status = {
+                'ready': True,
+                'modelLoaded': True,
+                'supportsPhoneDetection': True,
+                'supportsHeadPoseDetection': True,
+                'supportsFaceDetection': True,
+                'message': 'Malpractices pipeline is ready',
+            }
+        return jsonify({'success': True, **status, 'data': status})
     except Exception as e:
         return jsonify({
             'success': False,

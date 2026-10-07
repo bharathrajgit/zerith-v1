@@ -525,8 +525,9 @@ export default function usePracticeMonitoring({
     }
   }, [browserOnlyStarted, isBrowserOnly, sessionType, topicId, updateSessionState]);
 
-  const syncLocalVisionViolation = useCallback(async (analysis = {}) => {
-    if (!isBrowserOnly || !browserOnlyStarted) return;
+  const syncLocalVisionViolation = useCallback(async (analysis = {}, { fullModeFallback = false, serverState = null } = {}) => {
+    // In full mode, local findings are only reported when the server model is unavailable.
+    if (!fullModeFallback && (!isBrowserOnly || !browserOnlyStarted)) return;
 
     const violationType = analysis?.primaryViolationType;
     if (!violationType) return;
@@ -600,6 +601,21 @@ export default function usePracticeMonitoring({
         },
       });
 
+      if (fullModeFallback) {
+        if (response?.isLocked) {
+          updateSessionState({
+            ...(serverState || {}),
+            finalFlagged: true,
+            finalStatus: 'flagged',
+            isLocked: true,
+            lockedUntil: response?.lockedUntil || null,
+            lockReason: response?.lockReason || violationType,
+            lockCount: Number(response?.lockCount || 0),
+          });
+        }
+        return;
+      }
+
       updateSessionState(buildBrowserOnlySessionState({
         warningCount: nextWarningCount,
         warningLimit,
@@ -624,6 +640,7 @@ export default function usePracticeMonitoring({
         lockCount: Number(response?.lockCount || 0),
       }));
     } catch (_error) {
+      if (fullModeFallback) return;
       updateSessionState(buildBrowserOnlySessionState({
         warningCount: nextWarningCount,
         warningLimit,
@@ -695,7 +712,7 @@ export default function usePracticeMonitoring({
 
     const runLocalAnalysis = async () => {
       const localAnalysis = await analyzeLocalMonitoringFrame(captureVideoRef.current);
-      if (!localAnalysis) return false;
+      if (!localAnalysis) return null;
 
       applyVisionState({
         ...localAnalysis,
@@ -706,7 +723,7 @@ export default function usePracticeMonitoring({
       });
 
       await syncLocalVisionViolation(localAnalysis);
-      return true;
+      return localAnalysis;
     };
 
     const sampleFrame = async () => {
@@ -717,7 +734,8 @@ export default function usePracticeMonitoring({
       frameAnalysisInFlightRef.current = true;
       try {
         // Always run local analysis for face/phone detection since server doesn't have full model
-        const localAnalysisSuccess = await runLocalAnalysis();
+        const localAnalysis = await runLocalAnalysis();
+        const localAnalysisSuccess = Boolean(localAnalysis);
         
         if (!isBrowserOnly && sessionId) {
           const imageData = (() => {
@@ -750,7 +768,28 @@ export default function usePracticeMonitoring({
 
           // Apply server-side results for phone detection (uses trained YOLO model)
           // Keep local analysis for face detection
-          if (nextState?.detections) {
+          const serverDetections = nextState?.detections || null;
+          const serverHasFindings = Boolean(
+            serverDetections
+            && (
+              serverDetections.multipleFaces
+              || serverDetections.headPoseAway
+              || serverDetections.gazeAway
+              || serverDetections.faceMissing
+              || serverDetections.phoneVisible
+              || serverDetections.extraScreenVisible
+              || (Array.isArray(nextState?.annotations) && nextState.annotations.length > 0)
+              || (Array.isArray(serverDetections.annotations) && serverDetections.annotations.length > 0)
+            )
+          );
+
+          if (serverDetections && !serverHasFindings && localAnalysisSuccess) {
+            // Server fallback returned no findings; keep the local overlay instead of clearing it.
+            updateSessionState(nextState);
+            if (nextState?.mlFallback && localAnalysis?.primaryViolationType) {
+              await syncLocalVisionViolation(localAnalysis, { fullModeFallback: true, serverState: nextState });
+            }
+          } else if (serverDetections) {
             applyVisionState(nextState || {});
             updateSessionState(nextState);
             

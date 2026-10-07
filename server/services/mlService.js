@@ -403,13 +403,14 @@ const analyzeMalpracticesFrame = async (payload) => {
 const getMalpracticesHealth = async () => {
   try {
     const res = await mlAxios.get('/ml/malpractices/health');
+    const status = res.data?.data || res.data || {};
     return {
-      ready: res.data.success,
-      modelLoaded: res.data.data?.modelLoaded || false,
-      supportsPhoneDetection: res.data.data?.supportsPhoneDetection || false,
-      supportsHeadPoseDetection: res.data.data?.supportsHeadPoseDetection || false,
-      supportsFaceDetection: res.data.data?.supportsFaceDetection || false,
-      message: res.data.data?.message || 'Malpractices pipeline unavailable',
+      ready: Boolean(res.data?.success && (status.ready ?? true)),
+      modelLoaded: status.modelLoaded || false,
+      supportsPhoneDetection: status.supportsPhoneDetection || false,
+      supportsHeadPoseDetection: status.supportsHeadPoseDetection || false,
+      supportsFaceDetection: status.supportsFaceDetection || false,
+      message: status.message || 'Malpractices pipeline unavailable',
     };
   } catch (err) {
     return {

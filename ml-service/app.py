@@ -16,6 +16,7 @@ import diagnostic_model
 load_dotenv()
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 
 CORS(
     app,

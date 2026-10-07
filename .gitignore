@@ -26,3 +26,4 @@ ml-training/.kaggle/kaggle.json
 
 # Build output
 client/dist/
+userAndPassword.md

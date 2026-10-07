@@ -30,7 +30,7 @@ router.get('/dropout-risk/:studentId', protectInstitution, async (req, res, next
   try {
     // In a real scenario, you'd gather the 9 features from the student's data
     const student = await User.findById(req.params.studentId);
-    if (!student || student.institutionId.toString() !== req.institution._id.toString()) {
+    if (!student || student.institutionId?.toString() !== req.institution._id.toString()) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     // Build features from student profile + progress
