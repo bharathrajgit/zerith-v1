@@ -1,215 +1,300 @@
-const FACE_API_MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
-const PHONE_CLASSES = new Set(['cell phone']);
-const PHONE_MIN_SCORE = 0.55;
-const FACE_MIN_SCORE = 0.5;
-const EVIDENCE_MAX_WIDTH = 320;
+const FACE_MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+const PHONE_CLASSES = new Set(['cell phone', 'mobile phone', 'phone']);
 
-let faceDetectorPromise = null;
-let phoneDetectorPromise = null;
+let faceApiImportPromise = null;
+let faceApiModelsPromise = null;
+let cocoSsdImportPromise = null;
+let cocoModelPromise = null;
 
-const loadFaceDetector = () => {
-  if (!faceDetectorPromise) {
-    faceDetectorPromise = (async () => {
-      if (typeof window !== 'undefined' && 'FaceDetector' in window) {
-        try {
-          const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 3 });
+const safeNumber = (value, fallback = 0) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const toCoordinates = (source) => {
+  if (Array.isArray(source) && source.length >= 4) {
+    const [startX, startY, endX, endY] = source.map((value) => safeNumber(value, NaN));
+    if ([startX, startY, endX, endY].some((value) => Number.isNaN(value))) return null;
+
+    const x1 = Math.min(startX, endX);
+    const y1 = Math.min(startY, endY);
+    const x2 = Math.max(startX, endX);
+    const y2 = Math.max(startY, endY);
+
+    return x2 > x1 && y2 > y1 ? [x1, y1, x2, y2] : null;
+  }
+
+  const x = safeNumber(source?.x ?? source?.left ?? NaN, NaN);
+  const y = safeNumber(source?.y ?? source?.top ?? NaN, NaN);
+  const width = safeNumber(source?.width ?? source?.w ?? NaN, NaN);
+  const height = safeNumber(source?.height ?? source?.h ?? NaN, NaN);
+
+  if ([x, y, width, height].some((value) => Number.isNaN(value))) return null;
+
+  const x2 = x + width;
+  const y2 = y + height;
+  return x2 > x && y2 > y ? [x, y, x2, y2] : null;
+};
+
+const loadFaceApiModule = async () => {
+  if (!faceApiImportPromise) {
+    faceApiImportPromise = import('face-api.js')
+      .then((module) => module.default || module)
+      .catch((error) => {
+        faceApiImportPromise = null;
+        throw error;
+      });
+  }
+
+  return faceApiImportPromise;
+};
+
+const ensureFaceApiModels = async () => {
+  if (!faceApiModelsPromise) {
+    faceApiModelsPromise = (async () => {
+      const faceapi = await loadFaceApiModule();
+      await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL);
+      return faceapi;
+    })().catch((error) => {
+      faceApiModelsPromise = null;
+      throw error;
+    });
+  }
+
+  return faceApiModelsPromise;
+};
+
+const loadCocoSsdModule = async () => {
+  if (!cocoSsdImportPromise) {
+    cocoSsdImportPromise = import('@tensorflow-models/coco-ssd')
+      .then((module) => module.default || module)
+      .catch((error) => {
+        cocoSsdImportPromise = null;
+        throw error;
+      });
+  }
+
+  return cocoSsdImportPromise;
+};
+
+const ensureCocoModel = async () => {
+  if (!cocoModelPromise) {
+    cocoModelPromise = (async () => {
+      const cocoSsd = await loadCocoSsdModule();
+      return cocoSsd.load();
+    })().catch((error) => {
+      cocoModelPromise = null;
+      throw error;
+    });
+  }
+
+  return cocoModelPromise;
+};
+
+const detectFaces = async (video) => {
+  console.log('[LocalCameraMonitoring] detectFaces called, video:', !!video, 'videoWidth:', video?.videoWidth, 'videoHeight:', video?.videoHeight);
+  
+  if (!video) {
+    console.log('[LocalCameraMonitoring] No video provided for face detection');
+    return { supported: false, boxes: [] };
+  }
+
+  if (typeof window !== 'undefined' && 'FaceDetector' in window) {
+    try {
+      console.log('[LocalCameraMonitoring] Using native FaceDetector');
+      const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 3 });
+      const faces = await detector.detect(video);
+      console.log('[LocalCameraMonitoring] Native FaceDetector detected faces:', faces.length);
+      return {
+        supported: true,
+        boxes: faces
+          .map((face, index) => {
+            const coordinates = toCoordinates(face?.boundingBox);
+            if (!coordinates) return null;
+
+            return {
+              type: 'face',
+              label: faces.length > 1 ? `Face ${index + 1}` : 'Face',
+              confidence: 0.9,
+              coordinates,
+            };
+          })
+          .filter(Boolean),
+      };
+    } catch (_error) {
+      console.log('[LocalCameraMonitoring] Native FaceDetector failed, falling back to face-api.js:', _error);
+      // Fall through to face-api.js.
+    }
+  }
+
+  try {
+    console.log('[LocalCameraMonitoring] Using face-api.js');
+    const faceapi = await ensureFaceApiModels();
+    const detections = await faceapi.detectAllFaces(
+      video,
+      new faceapi.TinyFaceDetectorOptions({
+        inputSize: 320, // Reduced from 416 for faster detection
+        scoreThreshold: 0.5, // Increased from 0.35 to reduce false positives and speed up
+      })
+    );
+    console.log('[LocalCameraMonitoring] face-api.js detected faces:', detections.length);
+    return {
+      supported: true,
+      boxes: detections
+        .map((detection, index) => {
+          const coordinates = toCoordinates(detection?.box || detection?.detection?.box || detection);
+          if (!coordinates) return null;
+
           return {
-            detect: async (video) => {
-              const faces = await detector.detect(video);
-              return faces.map((face) => {
-                const box = face.boundingBox || {};
-                return {
-                  x1: box.x,
-                  y1: box.y,
-                  x2: box.x + box.width,
-                  y2: box.y + box.height,
-                  confidence: 1,
-                };
-              });
-            },
+            type: 'face',
+            label: detections.length > 1 ? `Face ${index + 1}` : 'Face',
+            confidence: safeNumber(detection?.score ?? detection?.detection?.score, 0.8),
+            coordinates,
           };
-        } catch {
-          // Fall through to face-api.js when the native detector cannot be created.
-        }
-      }
-
-      const faceapi = await import('face-api.js');
-      await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_API_MODEL_URL);
-      const options = new faceapi.TinyFaceDetectorOptions({ scoreThreshold: FACE_MIN_SCORE });
-      return {
-        detect: async (video) => {
-          const faces = await faceapi.detectAllFaces(video, options);
-          return faces.map((face) => ({
-            x1: face.box.x,
-            y1: face.box.y,
-            x2: face.box.x + face.box.width,
-            y2: face.box.y + face.box.height,
-            confidence: Number(face.score || 0),
-          }));
-        },
-      };
-    })().catch((error) => {
-      console.warn('[LocalMonitoring] Face detector unavailable:', error?.message || error);
-      return null;
-    });
-  }
-  return faceDetectorPromise;
-};
-
-const loadPhoneDetector = () => {
-  if (!phoneDetectorPromise) {
-    phoneDetectorPromise = (async () => {
-      await import('@tensorflow/tfjs');
-      const cocoSsd = await import('@tensorflow-models/coco-ssd');
-      const model = await cocoSsd.load();
-      return {
-        detect: async (video) => {
-          const predictions = await model.detect(video);
-          return predictions
-            .filter((prediction) => PHONE_CLASSES.has(prediction.class) && prediction.score >= PHONE_MIN_SCORE)
-            .map((prediction) => {
-              const [x, y, width, height] = prediction.bbox;
-              return {
-                x1: x,
-                y1: y,
-                x2: x + width,
-                y2: y + height,
-                confidence: Number(prediction.score || 0),
-                label: prediction.class,
-              };
-            });
-        },
-      };
-    })().catch((error) => {
-      console.warn('[LocalMonitoring] Phone detector unavailable:', error?.message || error);
-      return null;
-    });
-  }
-  return phoneDetectorPromise;
-};
-
-const captureEvidenceImage = (video) => {
-  try {
-    const sourceWidth = video.videoWidth || 320;
-    const sourceHeight = video.videoHeight || 240;
-    const scale = sourceWidth > EVIDENCE_MAX_WIDTH ? EVIDENCE_MAX_WIDTH / sourceWidth : 1;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
-    const context = canvas.getContext('2d');
-    if (!context) return '';
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.6);
-  } catch {
-    return '';
+        })
+        .filter(Boolean),
+    };
+  } catch (_error) {
+    console.log('[LocalCameraMonitoring] face-api.js failed:', _error);
+    return { supported: false, boxes: [] };
   }
 };
 
-const safeDetect = async (detector, video) => {
-  if (!detector) return null;
-  try {
-    return await detector.detect(video);
-  } catch (error) {
-    console.warn('[LocalMonitoring] Detection failed:', error?.message || error);
-    return null;
+const detectPhones = async (video) => {
+  console.log('[LocalCameraMonitoring] detectPhones called, video:', !!video);
+  
+  if (!video) {
+    console.log('[LocalCameraMonitoring] No video provided for phone detection');
+    return { supported: false, boxes: [] };
   }
+
+  // Phone detection is handled server-side using trained YOLO model
+  // Client-side coco-ssd is disabled due to tensorflow compatibility issues
+  console.log('[LocalCameraMonitoring] Phone detection handled server-side using trained model');
+  return { supported: false, boxes: [] };
+};
+
+const getLocalRiskLevel = (primaryViolationType, confidence, faceCount, phoneCount) => {
+  if (!primaryViolationType) return 'NONE';
+
+  if (primaryViolationType === 'mobile_detected') {
+    return phoneCount > 1 || confidence >= 0.85 ? 'HIGH' : 'MEDIUM';
+  }
+
+  if (primaryViolationType === 'multiple_faces') {
+    return faceCount > 2 || confidence >= 0.8 ? 'HIGH' : 'MEDIUM';
+  }
+
+  if (primaryViolationType === 'face_missing') {
+    return confidence >= 0.7 ? 'MEDIUM' : 'LOW';
+  }
+
+  return 'LOW';
 };
 
 export const analyzeLocalMonitoringFrame = async (video) => {
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+  console.log('[LocalCameraMonitoring] analyzeLocalMonitoringFrame called, video:', !!video, 'videoWidth:', video?.videoWidth, 'videoHeight:', video?.videoHeight);
+  
+  if (!video?.videoWidth || !video?.videoHeight) {
+    console.log('[LocalCameraMonitoring] Video not ready, returning null');
     return null;
   }
 
-  const [faceDetector, phoneDetector] = await Promise.all([loadFaceDetector(), loadPhoneDetector()]);
-  if (!faceDetector && !phoneDetector) return null;
-
-  const [faceBoxes, phoneBoxes] = await Promise.all([
-    safeDetect(faceDetector, video),
-    safeDetect(phoneDetector, video),
+  const [faceDetection, phoneDetection] = await Promise.all([
+    detectFaces(video),
+    detectPhones(video),
   ]);
 
-  const faceAnalysisAvailable = Array.isArray(faceBoxes);
-  const phoneAnalysisAvailable = Array.isArray(phoneBoxes);
-  if (!faceAnalysisAvailable && !phoneAnalysisAvailable) return null;
+  console.log('[LocalCameraMonitoring] faceDetection supported:', faceDetection.supported, 'phoneDetection supported:', phoneDetection.supported);
 
-  const faces = faceBoxes || [];
-  const phones = phoneBoxes || [];
-  const faceCount = faceAnalysisAvailable ? faces.length : 1;
+  if (!faceDetection.supported && !phoneDetection.supported) {
+    console.log('[LocalCameraMonitoring] Neither detection supported, returning null');
+    return null;
+  }
+
+  const faceBoxes = Array.isArray(faceDetection.boxes) ? faceDetection.boxes : [];
+  const phoneBoxes = Array.isArray(phoneDetection.boxes) ? phoneDetection.boxes : [];
+  const faceSupported = faceDetection.supported;
+  const phoneSupported = phoneDetection.supported;
+  const faceCount = faceSupported ? faceBoxes.length : 0;
+  const phoneCount = phoneSupported ? phoneBoxes.length : 0;
+  const phoneVisible = phoneSupported && phoneCount > 0;
+  const multipleFaces = faceSupported && faceCount > 1;
+  const faceMissing = faceSupported && faceCount === 0;
+  
+  console.log('[LocalCameraMonitoring] Detection results:', {
+    faceSupported,
+    faceCount,
+    faceMissing,
+    phoneSupported,
+    phoneCount,
+    phoneVisible,
+    multipleFaces,
+  });
+  const primaryViolationType = phoneVisible
+    ? 'mobile_detected'
+    : multipleFaces
+      ? 'multiple_faces'
+      : faceMissing
+        ? 'face_missing'
+        : '';
+  const confidence = phoneVisible
+    ? Math.max(...phoneBoxes.map((box) => safeNumber(box?.confidence, 0)), 0)
+    : multipleFaces
+      ? Math.max(...faceBoxes.map((box) => safeNumber(box?.confidence, 0)), 0.72)
+      : faceMissing
+        ? 0.58
+        : 0;
 
   const detections = {
-    multipleFaces: faceAnalysisAvailable && faceCount > 1,
+    multipleFaces,
     headPoseAway: false,
     gazeAway: false,
-    faceMissing: faceAnalysisAvailable && faceCount === 0,
-    phoneVisible: phones.length > 0,
-    extraScreenVisible: false,
+    faceMissing,
     faceCount,
+    phoneVisible,
+    extraScreenVisible: false,
   };
-
-  const alerts = [];
-  const phoneConfidence = phones.reduce((max, box) => Math.max(max, box.confidence), 0);
-  if (detections.phoneVisible) {
-    alerts.push({
-      code: 'PHONE_VISIBLE',
-      type: 'mobile_detected',
-      message: 'Phone detected in the camera frame.',
-      severity: 'HIGH',
-      confidence: phoneConfidence,
-    });
-  }
-  if (detections.multipleFaces) {
-    alerts.push({
-      code: 'MULTIPLE_FACES',
-      type: 'multiple_faces',
-      message: 'Multiple faces detected in the camera frame.',
-      severity: 'HIGH',
-      confidence: Math.min(0.98, 0.6 + (faceCount * 0.15)),
-    });
-  }
-  if (detections.faceMissing) {
-    alerts.push({
-      code: 'FACE_MISSING',
-      type: 'face_missing',
-      message: 'Face missing from the camera frame.',
-      severity: 'MEDIUM',
-      confidence: 0.75,
-    });
-  }
-
-  const primaryAlert = alerts[0] || null;
-  const primaryViolationType = primaryAlert?.type || '';
-  const confidence = Number(primaryAlert?.confidence || 0);
-  const riskLevel = primaryAlert ? primaryAlert.severity : 'NONE';
-
-  const annotations = [
-    ...faces.map((box, index) => ({
-      type: 'face',
-      label: faces.length > 1 ? `Face ${index + 1}` : 'Face',
-      confidence: box.confidence,
-      box: [box.x1, box.y1, box.x2, box.y2],
-    })),
-    ...phones.map((box) => ({
-      type: 'phone',
-      label: 'Phone',
-      confidence: box.confidence,
-      box: [box.x1, box.y1, box.x2, box.y2],
-    })),
-  ];
-
-  const shouldCaptureEvidence = primaryViolationType === 'mobile_detected' || primaryViolationType === 'multiple_faces';
+  const annotations = [...faceBoxes, ...phoneBoxes].map((box) => ({
+    ...box,
+  }));
+  const alerts = primaryViolationType
+    ? [{
+      type: primaryViolationType,
+      message:
+        primaryViolationType === 'mobile_detected'
+          ? 'Phone detected in the camera frame.'
+          : primaryViolationType === 'multiple_faces'
+            ? 'Multiple faces detected in the camera frame.'
+            : 'Face missing from the camera frame.',
+      confidence,
+    }]
+    : [];
 
   return {
     detections,
-    faceBoxes: faces.map((box) => ({ box: [box.x1, box.y1, box.x2, box.y2], confidence: box.confidence })),
-    phoneBoxes: phones.map((box) => ({ box: [box.x1, box.y1, box.x2, box.y2], confidence: box.confidence })),
+    faceBoxes,
+    phoneBoxes,
     annotations,
     alerts,
-    signals: alerts.map((alert) => alert.code),
+    signals: primaryViolationType
+      ? [primaryViolationType === 'mobile_detected'
+        ? 'PHONE_VISIBLE'
+        : primaryViolationType === 'multiple_faces'
+          ? 'MULTIPLE_FACES'
+          : 'FACE_MISSING']
+      : [],
     confidence,
-    riskLevel,
-    frameSize: { width: video.videoWidth, height: video.videoHeight },
+    riskLevel: getLocalRiskLevel(primaryViolationType, confidence, faceCount, phoneCount),
+    frameSize: {
+      width: video.videoWidth,
+      height: video.videoHeight,
+    },
     primaryViolationType,
-    detectedObject: primaryViolationType === 'mobile_detected' ? (phones[0]?.label || 'cell phone') : '',
-    violationImage: shouldCaptureEvidence ? captureEvidenceImage(video) : '',
+    fallback: true,
+    metadata: {
+      modelLoaded: faceSupported || phoneSupported,
+      modelSource: 'browser',
+    },
   };
 };

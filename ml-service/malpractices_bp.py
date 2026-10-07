@@ -1,160 +1,181 @@
-"""Malpractice frame-analysis blueprint.
-
-Uses an optional YOLO model (``MALPRACTICES_YOLO_MODEL`` or
-``trained_models/malpractices_yolo.pt``) for phone detection. When the model or
-its dependencies are unavailable, it returns a safe "no detections" response and
-the client-side detectors (face-api.js / coco-ssd) remain the primary signal.
-"""
-
-import base64
-import io
+import sys
 import os
-import threading
+import base64
+import numpy as np
+import cv2
+from flask import Blueprint, request, jsonify
+from dotenv import load_dotenv
 
-from flask import Blueprint, jsonify, request
+# Add malpractices directory to path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'malpractices'))
 
-malpractices_bp = Blueprint("malpractices", __name__)
+from malpractices_pipeline import MalpracticesPipeline
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.getenv(
-    "MALPRACTICES_YOLO_MODEL",
-    os.path.join(BASE_DIR, "trained_models", "malpractices_yolo.pt"),
-)
-PHONE_LABELS = {"cell phone", "phone", "mobile", "mobile phone"}
-PHONE_MIN_CONFIDENCE = float(os.getenv("MALPRACTICES_PHONE_MIN_CONFIDENCE", "0.55"))
+load_dotenv()
 
-_model = None
-_model_error = ""
-_model_lock = threading.Lock()
+malpractices_bp = Blueprint('malpractices_bp', __name__)
 
+# Global pipeline instance
+pipeline = None
 
-def _load_model():
-    global _model, _model_error
-    if _model is not None or _model_error:
-        return _model
-    with _model_lock:
-        if _model is not None or _model_error:
-            return _model
-        if not os.path.exists(MODEL_PATH):
-            _model_error = "Model file not found"
-            return None
-        try:
-            from ultralytics import YOLO
+def get_pipeline():
+    global pipeline
+    if pipeline is None:
+        device = 'cuda' if os.environ.get('USE_CUDA', 'false').lower() == 'true' else 'cpu'
+        pipeline = MalpracticesPipeline(device=device)
+    return pipeline
 
-            _model = YOLO(MODEL_PATH)
-        except Exception as exc:  # noqa: BLE001 - optional dependency
-            _model_error = f"Model load failed: {exc}"
-            _model = None
-    return _model
-
-
-def _decode_image(image_data):
-    if not image_data or not isinstance(image_data, str):
-        return None
-    try:
-        from PIL import Image
-
-        encoded = image_data.split(",", 1)[1] if "," in image_data else image_data
-        return Image.open(io.BytesIO(base64.b64decode(encoded))).convert("RGB")
-    except Exception:  # noqa: BLE001 - invalid image payload
-        return None
-
-
-def _empty_result(width, height, message, fallback=True):
-    return {
-        "detections": {
-            "multipleFaces": False,
-            "headPoseAway": False,
-            "gazeAway": False,
-            "faceMissing": False,
-            "faceCount": 1,
-            "phoneVisible": False,
-            "extraScreenVisible": False,
-        },
-        "faceBoxes": [],
-        "phoneBoxes": [],
-        "annotations": [],
-        "alerts": [],
-        "signals": [],
-        "confidence": 0.0,
-        "riskLevel": "NONE",
-        "frameSize": {"width": width, "height": height},
-        "primaryViolationType": "",
-        "fallback": fallback,
-        "metadata": {
-            "modelLoaded": _model is not None,
-            "modelSource": "yolo" if _model is not None else "heuristic",
-            "message": message,
-        },
-    }
-
-
-@malpractices_bp.route("/health", methods=["GET"])
-def health():
-    model = _load_model()
-    loaded = model is not None
-    return jsonify(
-        {
-            "success": True,
-            "data": {
-                "ready": True,
-                "modelLoaded": loaded,
-                "modelFilePresent": os.path.exists(MODEL_PATH),
-                "modelSource": "yolo" if loaded else "heuristic",
-                "supportsPhoneDetection": loaded,
-                "supportsFallbackHeuristics": True,
-                "message": "Phone detection model loaded."
-                if loaded
-                else "Using client-side detection fallback.",
-            },
-        }
-    )
-
-
-@malpractices_bp.route("/analyze-frame", methods=["POST"])
+@malpractices_bp.route('/analyze-frame', methods=['POST'])
 def analyze_frame():
-    payload = request.get_json(silent=True) or {}
-    width = int(payload.get("width") or 640)
-    height = int(payload.get("height") or 480)
-
-    model = _load_model()
-    if model is None:
-        return jsonify({"success": True, "data": _empty_result(width, height, "Using client-side detection fallback")})
-
-    image = _decode_image(payload.get("imageData"))
-    if image is None:
-        return jsonify({"success": False, "message": "imageData must be a valid base64 image"}), 400
-
-    width, height = image.size
+    """Analyze a frame for malpractices (phone, head pose, face missing)."""
     try:
-        results = model.predict(image, verbose=False)
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"success": True, "data": _empty_result(width, height, f"Inference failed: {exc}")})
-
-    phone_boxes = []
-    names = getattr(model, "names", {}) or {}
-    for result in results:
-        for box in getattr(result, "boxes", []) or []:
-            label = str(names.get(int(box.cls[0]), "")).lower()
-            confidence = float(box.conf[0])
-            if label in PHONE_LABELS and confidence >= PHONE_MIN_CONFIDENCE:
-                x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
-                phone_boxes.append({"box": [x1, y1, x2, y2], "confidence": confidence})
-
-    data = _empty_result(width, height, "Phone detection model analysis", fallback=False)
-    if phone_boxes:
-        top = max(b["confidence"] for b in phone_boxes)
-        data["detections"]["phoneVisible"] = True
-        data["phoneBoxes"] = phone_boxes
-        data["annotations"] = [
-            {"type": "phone", "label": "Phone", "confidence": b["confidence"], "box": b["box"]}
-            for b in phone_boxes
+        data = request.get_json()
+        
+        if not data or 'imageData' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'imageData is required'
+            }), 400
+        
+        # Decode base64 image
+        image_data = data['imageData']
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+        
+        image_bytes = base64.b64decode(image_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to decode image'
+            }), 400
+        
+        # Process frame
+        pipe = get_pipeline()
+        results = pipe.process_frame(frame)
+        
+        # Convert results to API format
+        face_annotations = [
+            {
+                'type': 'face',
+                'label': face_box.get('label', 'Face'),
+                'bbox': face_box.get('bbox', []),
+                'confidence': float(face_box.get('confidence', 1.0)),
+            }
+            for face_box in results.get('face_boxes', [])
         ]
-        data["alerts"] = [
-            {"code": "PHONE_VISIBLE", "message": "Phone detected in the camera frame.", "severity": "HIGH", "confidence": top}
+        phone_annotations = [
+            {
+                'type': 'phone',
+                'label': 'Phone',
+                'bbox': phone_box.get('bbox', []),
+                'confidence': float(phone_box.get('confidence', 0.0)),
+            }
+            for phone_box in results.get('phone_boxes', [])
         ]
-        data["signals"] = ["PHONE_VISIBLE"]
-        data["confidence"] = top
-        data["riskLevel"] = "HIGH"
-        data["primaryViolationType"] = "mobile_detected"
-    return jsonify({"success": True, "data": data})
+        annotations = [*face_annotations, *phone_annotations]
+        detections = {
+            'phoneVisible': results['phone_detected'],
+            'headPoseAway': results['head_pose_drowsy'],
+            'faceMissing': not results['face_detected'],
+            'multipleFaces': results.get('multiple_faces', False),
+            'extraScreenVisible': False,
+            'faceCount': results.get('face_count', 1 if results['face_detected'] else 0),
+            'faceBoxes': face_annotations,
+            'phoneBoxes': phone_annotations,
+            'annotations': annotations,
+        }
+        
+        # Build alerts based on results
+        alerts = []
+        if results['phone_detected']:
+            alerts.append({
+                'code': 'PHONE_VISIBLE',
+                'message': f'Phone detected (confidence: {results["phone_confidence"]:.2%})',
+                'severity': 'HIGH',
+                'confidence': results['phone_confidence']
+            })
+        
+        if results['head_pose_drowsy']:
+            alerts.append({
+                'code': 'HEAD_POSE_AWAY',
+                'message': f'Head pose drowsiness detected (yaw: {results["head_pose"]["yaw"]:.1f}°, pitch: {results["head_pose"]["pitch"]:.1f}°)',
+                'severity': 'MEDIUM',
+                'confidence': 0.7
+            })
+        
+        if not results['face_detected']:
+            alerts.append({
+                'code': 'FACE_MISSING',
+                'message': 'No face detected - person missing from frame',
+                'severity': 'HIGH',
+                'confidence': 0.8
+            })
+        
+        # Determine risk level
+        risk_level = 'LOW'
+        if results['phone_detected'] or not results['face_detected']:
+            risk_level = 'HIGH'
+        elif results['head_pose_drowsy']:
+            risk_level = 'MEDIUM'
+        
+        # Build signals
+        signals = []
+        if results['phone_detected']:
+            signals.append('PHONE_VISIBLE')
+        if results['head_pose_drowsy']:
+            signals.append('HEAD_POSE_AWAY')
+        if not results['face_detected']:
+            signals.append('FACE_MISSING')
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'detections': detections,
+                'alerts': alerts,
+                'signals': signals,
+                'riskLevel': risk_level,
+                'riskScore': 0.7 if risk_level == 'HIGH' else 0.4 if risk_level == 'MEDIUM' else 0.1,
+                'confidence': results['phone_confidence'] if results['phone_detected'] else 0.8 if not results['face_detected'] else 0.5,
+                'frameSize': {
+                    'width': int(frame.shape[1]),
+                    'height': int(frame.shape[0]),
+                },
+                'metadata': {
+                    'modelSource': 'onnx',
+                    'modelLoaded': True,
+                    'supportsPhoneDetection': True,
+                    'supportsHeadPoseDetection': True,
+                    'supportsFaceDetection': True,
+                }
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@malpractices_bp.route('/health', methods=['GET'])
+def health():
+    """Check if malpractices pipeline is ready."""
+    try:
+        pipe = get_pipeline()
+        return jsonify({
+            'success': True,
+            'ready': True,
+            'modelLoaded': True,
+            'supportsPhoneDetection': True,
+            'supportsHeadPoseDetection': True,
+            'supportsFaceDetection': True,
+            'message': 'Malpractices pipeline is ready'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'ready': False,
+            'message': str(e)
+        }), 500

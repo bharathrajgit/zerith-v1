@@ -1,89 +1,135 @@
-export const MONITORING_START_TIMEOUT_MS = 60000;
+export const MONITORING_START_TIMEOUT_MS = 15000;
+export const VIDEO_ELEMENT_READY_POLL_MS = 40;
+const DEFAULT_ANALYSIS_RESUME_GRACE_MS = 500;
+const DEFAULT_FRAME_KICKOFF_DELAY_MS = 1200;
+const CODING_ANALYSIS_RESUME_GRACE_MS = 1000;
+const CODING_FRAME_KICKOFF_DELAY_MS = 4000;
 
-const DEFAULT_ANALYSIS_TIMINGS = {
-  frameKickoffDelayMs: 1500,
-  analysisResumeGraceMs: 500,
+const READY_STAGES = new Set(['active']);
+const STARTUP_BLOCKING_STAGES = new Set([
+  'checking_readiness',
+  'requesting_camera',
+  'awaiting_video',
+  'starting_session',
+  'warming_up',
+]);
+
+export const isMonitoringStageReadyToProceed = (stage = '') => (
+  READY_STAGES.has(String(stage || ''))
+);
+
+export const isStartupMonitoringStage = (stage = '') => (
+  STARTUP_BLOCKING_STAGES.has(String(stage || ''))
+);
+
+export const getPracticeMonitoringAnalysisTimings = (sessionType = '') => {
+  if (String(sessionType || '').trim().toLowerCase() === 'coding') {
+    return {
+      analysisResumeGraceMs: CODING_ANALYSIS_RESUME_GRACE_MS,
+      frameKickoffDelayMs: CODING_FRAME_KICKOFF_DELAY_MS,
+    };
+  }
+
+  return {
+    analysisResumeGraceMs: DEFAULT_ANALYSIS_RESUME_GRACE_MS,
+    frameKickoffDelayMs: DEFAULT_FRAME_KICKOFF_DELAY_MS,
+  };
 };
 
-const ANALYSIS_TIMINGS_BY_SESSION_TYPE = {
-  diagnostic: { frameKickoffDelayMs: 2500, analysisResumeGraceMs: 750 },
-  assessment: DEFAULT_ANALYSIS_TIMINGS,
-  coding: DEFAULT_ANALYSIS_TIMINGS,
-};
+export const withTimeout = (promiseOrFactory, timeoutMs, message, options = {}) => {
+  const { onTimeout } = options;
 
-export const getPracticeMonitoringAnalysisTimings = (sessionType) => ({
-  ...DEFAULT_ANALYSIS_TIMINGS,
-  ...(ANALYSIS_TIMINGS_BY_SESSION_TYPE[sessionType] || {}),
-});
-
-export const isMonitoringStageReadyToProceed = (stage) => stage === 'active';
-
-export const withTimeout = (task, timeoutMs, message, { onTimeout } = {}) => {
-  let timeoutId = null;
-
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       onTimeout?.();
-      reject(new Error(message || 'The operation timed out.'));
+      reject(new Error(message));
     }, timeoutMs);
-  });
 
-  const taskPromise = Promise.resolve().then(() => (typeof task === 'function' ? task() : task));
+    const resolveSafely = (callback) => (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      callback(value);
+    };
 
-  return Promise.race([taskPromise, timeoutPromise]).finally(() => {
-    clearTimeout(timeoutId);
+    Promise.resolve(
+      typeof promiseOrFactory === 'function'
+        ? promiseOrFactory()
+        : promiseOrFactory
+    ).then(
+      resolveSafely(resolve),
+      resolveSafely(reject)
+    );
   });
 };
 
-const isStreamLive = (mediaStream) => {
-  if (!mediaStream) return false;
-  if (mediaStream.active === false) return false;
-  if (typeof mediaStream.getTracks !== 'function') return true;
-  return mediaStream.getTracks().some((track) => track?.readyState !== 'ended');
-};
+export const waitForAttachedVideoPlayback = ({
+  getVideo,
+  mediaStream,
+  timeoutMs,
+  errorMessage = 'Camera preview could not be initialized. Please try again.',
+  pollIntervalMs = VIDEO_ELEMENT_READY_POLL_MS,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval,
+}) => new Promise((resolve, reject) => {
+  let settled = false;
+  let timeoutId = null;
+  let intervalId = null;
 
-export const waitForAttachedVideoPlayback = ({ getVideo, mediaStream, timeoutMs = 7000 }) => new Promise((resolve, reject) => {
-  const startedAt = Date.now();
-  let playRequested = false;
-
-  const check = () => {
-    const video = typeof getVideo === 'function' ? getVideo() : null;
-
-    if (!isStreamLive(mediaStream)) {
-      reject(new Error('Camera stream ended before the preview started. Please try again.'));
-      return;
+  const cleanup = () => {
+    if (timeoutId) {
+      clearTimeoutImpl(timeoutId);
+      timeoutId = null;
     }
-
-    if (video) {
-      if (mediaStream && video.srcObject !== mediaStream) {
-        video.srcObject = mediaStream;
-      }
-
-      if (!playRequested && video.paused && typeof video.play === 'function') {
-        playRequested = true;
-        const playResult = video.play();
-        if (playResult && typeof playResult.catch === 'function') {
-          playResult.catch(() => {
-            playRequested = false;
-          });
-        }
-      }
-
-      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-        resolve(video);
-        return;
-      }
+    if (intervalId) {
+      clearIntervalImpl(intervalId);
+      intervalId = null;
     }
-
-    if (Date.now() - startedAt > timeoutMs) {
-      reject(new Error('Camera preview could not start in time. Please try again.'));
-      return;
-    }
-
-    setTimeout(check, 50);
   };
 
-  check();
+  const settle = (callback) => (value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    callback(value);
+  };
+
+  const resolveSafely = settle(resolve);
+  const rejectSafely = settle(reject);
+
+  const tryActivate = () => {
+    const video = getVideo?.();
+    if (!video) return;
+
+    if (mediaStream && video.srcObject !== mediaStream) {
+      video.srcObject = mediaStream;
+    }
+
+    try {
+      const playback = video.play?.();
+      if (playback?.catch) {
+        playback.catch(() => {});
+      }
+    } catch {
+      // Ignore transient autoplay/playback issues while the stream warms up.
+    }
+
+    if ((video.srcObject === mediaStream || !mediaStream) && Number(video.readyState || 0) >= 2) {
+      resolveSafely(video);
+    }
+  };
+
+  timeoutId = setTimeoutImpl(() => {
+    rejectSafely(new Error(errorMessage));
+  }, timeoutMs);
+
+  intervalId = setIntervalImpl(tryActivate, pollIntervalMs);
+  tryActivate();
 });
 
 export const scheduleWarmupActivation = ({
@@ -92,17 +138,16 @@ export const scheduleWarmupActivation = ({
   mediaStream,
   onActivate,
   setMonitoringStage,
-  warmupMs = 0,
+  warmupMs,
   setTimeoutImpl = setTimeout,
 }) => setTimeoutImpl(() => {
-  if (typeof getCurrentAttemptId === 'function' && getCurrentAttemptId() !== attemptId) {
-    return;
-  }
-
-  if (mediaStream && !isStreamLive(mediaStream)) {
-    setMonitoringStage?.('error');
-    return;
-  }
-
+  if (attemptId !== getCurrentAttemptId()) return;
+  const hasLiveTrack = typeof mediaStream?.getTracks === 'function'
+    ? mediaStream.getTracks().some((track) => track?.readyState !== 'ended')
+    : true;
+  const streamUnavailable = mediaStream == null
+    || (mediaStream.active === false && !hasLiveTrack);
+  if (streamUnavailable) return;
+  setMonitoringStage('active');
   onActivate?.();
-}, Math.max(0, Number(warmupMs) || 0));
+}, warmupMs);
