@@ -22,9 +22,9 @@ def get_detector():
 @weakarea_bp.route('/detect-weak-areas', methods=['POST'])
 def detect_weak_areas():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        if not data or 'topics' not in data:
+        if not isinstance(data, dict) or 'topics' not in data:
             return jsonify({
                 'success': False,
                 'message': 'topics array is required'
@@ -61,6 +61,8 @@ def detect_weak_areas():
             'data':    result
         })
 
+    except (ValueError, TypeError) as e:
+        return jsonify({'success': False, 'message': f'Invalid input: {e}'}), 400
     except Exception as e:
         return jsonify({
             'success': False,

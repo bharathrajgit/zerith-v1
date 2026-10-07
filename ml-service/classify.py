@@ -21,9 +21,9 @@ def get_classifier():
 @classify_bp.route('/classify-level', methods=['POST'])
 def classify_level():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        if not data or 'performance_data' not in data:
+        if not isinstance(data, dict) or 'performance_data' not in data:
             return jsonify({
                 'success': False,
                 'message': 'performance_data is required'
@@ -81,6 +81,8 @@ def classify_level():
             }
         })
 
+    except (ValueError, TypeError) as e:
+        return jsonify({'success': False, 'message': f'Invalid input: {e}'}), 400
     except Exception as e:
         return jsonify({
             'success': False,
@@ -90,6 +92,12 @@ def classify_level():
 
 @classify_bp.route('/train', methods=['GET'])
 def train_model():
+    # Retraining overwrites the deployed model; only allow it when explicitly enabled.
+    if os.environ.get('ML_ENABLE_TRAIN_ENDPOINT', 'false').lower() != 'true':
+        return jsonify({
+            'success': False,
+            'message': 'Training endpoint is disabled. Set ML_ENABLE_TRAIN_ENDPOINT=true or run train_models.py.'
+        }), 403
     try:
         from utils.data_preprocessor import (
             generate_training_data
