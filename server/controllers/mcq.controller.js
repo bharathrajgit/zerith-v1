@@ -1,5 +1,5 @@
 const MCQ = require('../models/MCQ');
-const { lockAnswer } = require('../services/mcqAnswerLocks');
+const { markServed, isServed, getLockedAnswer, lockAnswer } = require('../services/mcqAnswerLocks');
 const Module = require('../models/Module');
 const {
   buildProgressionForUser,
@@ -122,6 +122,7 @@ const getMCQsByTopic = async (req, res, next) => {
     }
 
     const questions = selectedMcqs.map(serializeQuestion);
+    markServed(req.user._id, selectedMcqs.map((mcq) => mcq._id));
     const fallbackUsed = selectedMcqs.some((mcq) => mcq.difficulty !== level);
 
     res.status(200).json({
@@ -182,6 +183,13 @@ const checkMCQAnswer = async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: 'MCQ not found',
+      });
+    }
+
+    if (!isServed(req.user._id, mcq._id) && getLockedAnswer(req.user._id, mcq._id) === undefined) {
+      return res.status(403).json({
+        success: false,
+        message: 'This question is not part of your current assessment',
       });
     }
 
