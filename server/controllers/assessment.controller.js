@@ -477,7 +477,6 @@ const submitDiagnostic = async (req, res, next) => {
     }
 
     const scoreResult = calculateAssessmentScore(questions, normalizedSubmissions);
-    clearLocks(req.user._id, mcqIds);
 
     const assessment = await Assessment.create({
       userId: req.user._id,
