@@ -19,9 +19,9 @@ def get_scorer():
 @readiness_bp.route('/readiness-score', methods=['POST'])
 def readiness_score():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        if not data or 'mastery' not in data:
+        if not isinstance(data, dict) or 'mastery' not in data:
             return jsonify({
                 'success': False,
                 'message': 'mastery object is required'
@@ -42,6 +42,8 @@ def readiness_score():
             'data':    result
         })
 
+    except (ValueError, TypeError) as e:
+        return jsonify({'success': False, 'message': f'Invalid input: {e}'}), 400
     except Exception as e:
         return jsonify({
             'success': False,

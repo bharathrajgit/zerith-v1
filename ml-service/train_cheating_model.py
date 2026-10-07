@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 def create_synthetic_cheating_data(n=1000):
     np.random.seed(42)
     data = []
+    labels = []
     for _ in range(n):
         is_cheater = np.random.choice([0,1], p=[0.7,0.3])
         if is_cheater:
@@ -38,8 +39,9 @@ def create_synthetic_cheating_data(n=1000):
                copy_attempts, window_blur, hint_rate, changed_answers,
                total_questions, past_avg_accuracy]
         data.append(row)
+        labels.append(is_cheater)
     df = pd.DataFrame(data, columns=CheatingDetector().features)
-    df['label'] = is_cheater
+    df['label'] = labels
     return df
 
 if __name__ == '__main__':

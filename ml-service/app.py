@@ -1,3 +1,4 @@
+import math
 import os
 import threading
 from collections import Counter
@@ -268,12 +269,26 @@ def start_diagnostic_model_warmup():
 
 
 def validate_diagnostic_payload(payload):
-    if not payload:
+    if not payload or not isinstance(payload, dict):
         return "Request body is required."
 
     missing = [feature for feature in FEATURE_ORDER if feature not in payload]
     if missing:
         return f"Missing fields: {', '.join(missing)}"
+
+    invalid = []
+    for feature in FEATURE_ORDER:
+        value = payload[feature]
+        if isinstance(value, bool):
+            invalid.append(feature)
+            continue
+        try:
+            if not math.isfinite(float(value)):
+                invalid.append(feature)
+        except (TypeError, ValueError):
+            invalid.append(feature)
+    if invalid:
+        return f"Fields must be numeric: {', '.join(invalid)}"
 
     return ""
 
@@ -344,11 +359,11 @@ def contribution_split(features):
 
 @app.route("/ml/classify-diagnostic", methods=["POST"])
 def classify_diagnostic():
-    validation_error = validate_diagnostic_payload(request.get_json())
+    payload = request.get_json(silent=True)
+    validation_error = validate_diagnostic_payload(payload)
     if validation_error:
         return jsonify({"success": False, "message": validation_error}), 400
 
-    payload = request.get_json()
     features = {name: clip_feature(name, payload[name]) for name in FEATURE_ORDER}
     features["combined_score"] = combined_score_from_parts(features["mcq_score"], features["coding_score"])
     features["hard_performance_ratio"] = hard_ratio_from_scores(
