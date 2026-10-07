@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Mail, Lock, Eye, EyeOff, User, Phone,
-  Building2, MapPin, Globe, CheckCircle, Copy, Zap, ArrowLeft,
+  Mail, Lock, Eye, EyeOff, Phone,
+  Building2, MapPin, Globe, CheckCircle, Check, Copy, ArrowLeft,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';

@@ -750,7 +750,24 @@ export default function usePracticeMonitoring({
 
           // Apply server-side results for phone detection (uses trained YOLO model)
           // Keep local analysis for face detection
-          if (nextState?.detections) {
+          const serverDetections = nextState?.detections || null;
+          const serverHasFindings = Boolean(
+            serverDetections
+            && (
+              serverDetections.multipleFaces
+              || serverDetections.headPoseAway
+              || serverDetections.gazeAway
+              || serverDetections.faceMissing
+              || serverDetections.phoneVisible
+              || serverDetections.extraScreenVisible
+              || (Array.isArray(nextState?.annotations) && nextState.annotations.length > 0)
+            )
+          );
+
+          if (serverDetections && !serverHasFindings && localAnalysisSuccess) {
+            // Server fallback returned no findings; keep the local overlay instead of clearing it.
+            updateSessionState(nextState);
+          } else if (serverDetections) {
             applyVisionState(nextState || {});
             updateSessionState(nextState);
             

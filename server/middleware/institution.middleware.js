@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 const Institution = require('../models/Institution');
 
+const debugLog = (...args) => {
+  if (process.env.NODE_ENV === 'development') console.log(...args);
+};
+
 const protectInstitution = async (req, res, next) => {
   try {
     let token;
@@ -12,7 +16,7 @@ const protectInstitution = async (req, res, next) => {
     }
 
     if (!token) {
-      console.log('🔴 [protectInstitution] No token provided for', req.method, req.path);
+      debugLog('🔴 [protectInstitution] No token provided for', req.method, req.path);
       return res.status(401).json({
         success: false,
         message: 'Not authorized, no token provided',
@@ -20,10 +24,10 @@ const protectInstitution = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log('✅ [protectInstitution] Token decoded:', decoded.id, 'type:', decoded.type);
+    debugLog('✅ [protectInstitution] Token decoded:', decoded.id, 'type:', decoded.type);
 
     if (decoded.type !== 'institution') {
-      console.log('🔴 [protectInstitution] Invalid token type:', decoded.type, 'for', req.path);
+      debugLog('🔴 [protectInstitution] Invalid token type:', decoded.type, 'for', req.path);
       return res.status(401).json({
         success: false,
         message: 'Invalid token type',
@@ -32,17 +36,17 @@ const protectInstitution = async (req, res, next) => {
 
     const institution = await Institution.findById(decoded.id);
     if (!institution) {
-      console.log('🔴 [protectInstitution] Institution not found for ID:', decoded.id);
+      debugLog('🔴 [protectInstitution] Institution not found for ID:', decoded.id);
       return res.status(401).json({
         success: false,
         message: 'Institution not found',
       });
     }
 
-    console.log('✅ [protectInstitution] Institution found:', institution._id, 'isActive:', institution.isActive);
+    debugLog('✅ [protectInstitution] Institution found:', institution._id, 'isActive:', institution.isActive);
     
     if (!institution.isActive) {
-      console.log('🔴 [protectInstitution] Institution is not active:', institution._id);
+      debugLog('🔴 [protectInstitution] Institution is not active:', institution._id);
       return res.status(401).json({
         success: false,
         message: 'Institution account deactivated',
