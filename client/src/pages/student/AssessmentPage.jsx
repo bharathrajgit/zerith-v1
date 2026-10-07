@@ -463,20 +463,16 @@ export default function AssessmentPage() {
         return;
       }
 
-      // Fetch correct answer to determine isCorrect
-      let correctAnswerValue = null;
+      // Map the shuffled option back to the original index and check it server-side
+      const realSelection = actualSelection !== null ? currentQ.originalOrder[actualSelection] : -1;
       try {
-        const { data } = await api.get(`/mcq/${currentQ._id}`);
+        const { data } = await api.post(`/mcq/${currentQ._id}/check`, { selectedAnswer: realSelection });
         if (data.success) {
-          correctAnswerValue = data.data.mcq.correctAnswer;
-          setCurrentCorrectAnswer(correctAnswerValue);
-          setCurrentExplanation(data.data.mcq.explanation || '');
+          setCurrentCorrectAnswer(data.data.correctAnswer);
+          setCurrentExplanation(data.data.explanation || '');
           setShowExplanation(true);
 
-          // Determine correctness using originalOrder mapping
-          const mapping = currentQ.originalOrder;
-          const realSelection = actualSelection !== null ? mapping[actualSelection] : -1;
-          const isAnswerCorrect = realSelection === correctAnswerValue;
+          const isAnswerCorrect = Boolean(data.data.isCorrect);
           setIsCorrect(isAnswerCorrect);
           
           // Play sound effect based on correctness
@@ -495,7 +491,7 @@ export default function AssessmentPage() {
       // Record answer
       answersRef.current.push({
         mcqId: currentQ._id,
-        selectedAnswer: actualSelection !== null ? currentQ.originalOrder[actualSelection] : -1,
+        selectedAnswer: realSelection,
         timeTaken: config.timePerQ - timeLeft,
         hintsUsed: hintText ? 1 : 0,
       });
