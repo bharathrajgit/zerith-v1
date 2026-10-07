@@ -1,6 +1,7 @@
 import sys
 import os
 import base64
+import binascii
 import numpy as np
 import cv2
 from flask import Blueprint, request, jsonify
@@ -73,7 +74,10 @@ def analyze_frame():
         if ',' in image_data:
             image_data = image_data.split(',')[1]
         
-        image_bytes = base64.b64decode(image_data)
+        try:
+            image_bytes = base64.b64decode(image_data, validate=False)
+        except (binascii.Error, ValueError):
+            return jsonify({'success': False, 'message': 'imageData is not valid base64'}), 400
         nparr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
@@ -147,9 +151,17 @@ def analyze_frame():
                 'confidence': 0.8
             })
         
+        if results.get('multiple_faces', False):
+            alerts.append({
+                'code': 'MULTIPLE_FACES',
+                'message': f'Multiple faces detected ({results.get("face_count", 2)})',
+                'severity': 'HIGH',
+                'confidence': 0.8
+            })
+
         # Determine risk level
         risk_level = 'LOW'
-        if results['phone_detected'] or not results['face_detected']:
+        if results['phone_detected'] or not results['face_detected'] or results.get('multiple_faces', False):
             risk_level = 'HIGH'
         elif results['head_pose_drowsy']:
             risk_level = 'MEDIUM'
@@ -162,6 +174,8 @@ def analyze_frame():
             signals.append('HEAD_POSE_AWAY')
         if not results['face_detected']:
             signals.append('FACE_MISSING')
+        if results.get('multiple_faces', False):
+            signals.append('MULTIPLE_FACES')
         
         return jsonify({
             'success': True,
@@ -206,6 +220,8 @@ def health():
                 'supportsFaceDetection': False,
                 'message': f'Malpractices pipeline unavailable: {PIPELINE_IMPORT_ERROR}',
             }
+        elif hasattr(pipe, 'status'):
+            status = pipe.status()
         else:
             status = {
                 'ready': True,

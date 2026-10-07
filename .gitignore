@@ -27,3 +27,6 @@ ml-training/.kaggle/kaggle.json
 # Build output
 client/dist/
 userAndPassword.md
+
+# Downloaded YOLO weights
+ml-service/trained_models/*.pt
