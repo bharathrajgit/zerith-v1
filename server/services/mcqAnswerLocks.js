@@ -43,11 +43,9 @@ const getLockedAnswer = (userId, mcqId) => {
   return lock.selectedAnswer;
 };
 
+// Served marks are kept so a retry of the same questions can still be checked.
 const clearLocks = (userId, mcqIds = []) => {
-  mcqIds.forEach((mcqId) => {
-    locks.delete(keyFor(userId, mcqId));
-    served.delete(keyFor(userId, mcqId));
-  });
+  mcqIds.forEach((mcqId) => locks.delete(keyFor(userId, mcqId)));
 };
 
 module.exports = { markServed, isServed, lockAnswer, getLockedAnswer, clearLocks };
