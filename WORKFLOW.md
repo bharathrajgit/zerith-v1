@@ -33,7 +33,7 @@ Code judge: `server/services/codeJudge.js` compiles and runs Java locally, so `j
    
    Phone detection runs on the server.
 3. Browser events are recorded: tab switches, copy attempts, focus loss.
-4. Frames go to `POST /api/monitoring/sessions/:id/analyze-frame`. The API forwards them to ML `/ml/malpractices/analyze-frame`. That endpoint uses `MalpracticesPipeline` from `ml-service/malpractices/` (phone, head pose, face). If the pipeline is missing, it returns no findings and the browser face detector handles detection.
+4. Frames go to `POST /api/monitoring/sessions/:id/analyze-frame`. The API forwards them to ML `/ml/malpractices/analyze-frame`. That endpoint uses `MalpracticesPipeline` (`ml-service/malpractices/malpractices_pipeline.py`): OpenCV Haar cascades for faces (frontal + profile) and a rough head pose, plus Ultralytics YOLO for phones. YOLO weights come from `MALPRACTICES_YOLO_MODEL`, else `trained_models/malpractices_yolo.pt`, else `yolov8n.pt` (COCO `cell phone`, downloaded on first use). If YOLO can't load, `/health` reports `supportsPhoneDetection: false`. If the pipeline can't load at all, the endpoint returns no findings with `fallback: true` and the browser's local findings are reported instead.
 5. Violations are reported with `POST /api/malpractice/report-violation`, which creates a `MalpracticeLog` with evidence. When the warning limit is reached, the student is locked (`GET /api/malpractice/check-lock`).
 6. The session ends with `POST /api/monitoring/sessions/:id/finish`.
 
