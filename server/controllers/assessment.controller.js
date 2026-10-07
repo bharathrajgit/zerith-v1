@@ -12,6 +12,7 @@ const {
   syncRoadmapForUser,
 } = require('../services/roadmapGenerator');
 const mlService = require('../services/mlService');
+const { getLockedAnswer, clearLocks } = require('../services/mcqAnswerLocks');
 const {
   classifyLevel,
   detectWeakAreas,
@@ -138,7 +139,10 @@ const submitAssessment = async (req, res, next) => {
       });
     }
 
-    const normalizedSubmissions = normalizeAssessmentSubmissions(submissions);
+    const normalizedSubmissions = normalizeAssessmentSubmissions(submissions).map((submission) => {
+      const lockedAnswer = getLockedAnswer(req.user._id, submission.mcqId);
+      return lockedAnswer === undefined ? submission : { ...submission, selectedAnswer: lockedAnswer };
+    });
     if (!normalizedSubmissions.length) {
       return res.status(400).json({
         success: false,
@@ -163,6 +167,7 @@ const submitAssessment = async (req, res, next) => {
 
     // Calculate score
     const scoreResult = calculateAssessmentScore(questions, normalizedSubmissions);
+    clearLocks(req.user._id, mcqIds);
     const { passed, passCriteria, requiredCorrectAnswers } = evaluatePass(
       round,
       scoreResult.correctAnswers,
@@ -451,7 +456,10 @@ const submitDiagnostic = async (req, res, next) => {
       });
     }
 
-    const normalizedSubmissions = normalizeAssessmentSubmissions(submissions);
+    const normalizedSubmissions = normalizeAssessmentSubmissions(submissions).map((submission) => {
+      const lockedAnswer = getLockedAnswer(req.user._id, submission.mcqId);
+      return lockedAnswer === undefined ? submission : { ...submission, selectedAnswer: lockedAnswer };
+    });
     if (!normalizedSubmissions.length) {
       return res.status(400).json({
         success: false,
@@ -469,6 +477,7 @@ const submitDiagnostic = async (req, res, next) => {
     }
 
     const scoreResult = calculateAssessmentScore(questions, normalizedSubmissions);
+    clearLocks(req.user._id, mcqIds);
 
     const assessment = await Assessment.create({
       userId: req.user._id,

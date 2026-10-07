@@ -1,4 +1,5 @@
 const MCQ = require('../models/MCQ');
+const { lockAnswer } = require('../services/mcqAnswerLocks');
 const Module = require('../models/Module');
 const {
   buildProgressionForUser,
@@ -140,12 +141,12 @@ const getMCQsByTopic = async (req, res, next) => {
   }
 };
 
-// @desc    Get single MCQ with answer and explanation (after assessment)
+// @desc    Get single MCQ without its answer or explanation
 // @route   GET /api/mcq/:mcqId
 // @access  Private
 const getMCQById = async (req, res, next) => {
   try {
-    const mcq = await MCQ.findById(req.params.mcqId);
+    const mcq = await MCQ.findById(req.params.mcqId).select('-correctAnswer -explanation');
     if (!mcq) {
       return res.status(404).json({
         success: false,
@@ -156,6 +157,44 @@ const getMCQById = async (req, res, next) => {
     res.status(200).json({
       success: true,
       data: { mcq },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Check an answer; reveals the correct answer and explanation.
+//          The first checked answer is locked for the assessment submission.
+// @route   POST /api/mcq/:mcqId/check
+// @access  Private
+const checkMCQAnswer = async (req, res, next) => {
+  try {
+    const selectedAnswer = Number(req.body?.selectedAnswer);
+    if (!Number.isInteger(selectedAnswer) || selectedAnswer < -1 || selectedAnswer > 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'selectedAnswer must be an integer from -1 to 3',
+      });
+    }
+
+    const mcq = await MCQ.findById(req.params.mcqId).select('correctAnswer explanation');
+    if (!mcq) {
+      return res.status(404).json({
+        success: false,
+        message: 'MCQ not found',
+      });
+    }
+
+    const lockedAnswer = lockAnswer(req.user._id, mcq._id, selectedAnswer);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        selectedAnswer: lockedAnswer,
+        isCorrect: lockedAnswer === mcq.correctAnswer,
+        correctAnswer: mcq.correctAnswer,
+        explanation: mcq.explanation || '',
+      },
     });
   } catch (err) {
     next(err);
@@ -206,4 +245,4 @@ const getDiagnosticMCQs = async (req, res, next) => {
   }
 };
 
-module.exports = { getMCQsByTopic, getMCQById, getDiagnosticMCQs };
+module.exports = { getMCQsByTopic, getMCQById, checkMCQAnswer, getDiagnosticMCQs };
