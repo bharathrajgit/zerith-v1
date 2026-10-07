@@ -761,6 +761,7 @@ export default function usePracticeMonitoring({
               || serverDetections.phoneVisible
               || serverDetections.extraScreenVisible
               || (Array.isArray(nextState?.annotations) && nextState.annotations.length > 0)
+              || (Array.isArray(serverDetections.annotations) && serverDetections.annotations.length > 0)
             )
           );
 

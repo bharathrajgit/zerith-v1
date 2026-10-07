@@ -27,12 +27,13 @@ Code judge: `server/services/codeJudge.js` compiles and runs Java locally, so `j
 `usePracticeMonitoring` runs this flow:
 
 1. Webcam preview.
-2. In the browser, `localCameraMonitoring.js` (face-api.js / native FaceDetector + COCO-SSD) checks for:
+2. In the browser, `localCameraMonitoring.js` (native FaceDetector or face-api.js) checks for:
    - a missing face
    - multiple faces
-   - a phone
+   
+   Phone detection runs on the server.
 3. Browser events are recorded: tab switches, copy attempts, focus loss.
-4. Frames go to `POST /api/monitoring/sessions/:id/analyze-frame`. The API forwards them to ML `/ml/malpractices/analyze-frame`. That endpoint uses a YOLO model if `trained_models/malpractices_yolo.pt` exists; otherwise it returns no findings and the browser detectors handle detection.
+4. Frames go to `POST /api/monitoring/sessions/:id/analyze-frame`. The API forwards them to ML `/ml/malpractices/analyze-frame`. That endpoint uses `MalpracticesPipeline` from `ml-service/malpractices/` (phone, head pose, face). If the pipeline is missing, it returns no findings and the browser face detector handles detection.
 5. Violations are reported with `POST /api/malpractice/report-violation`, which creates a `MalpracticeLog` with evidence. When the warning limit is reached, the student is locked (`GET /api/malpractice/check-lock`).
 6. The session ends with `POST /api/monitoring/sessions/:id/finish`.
 

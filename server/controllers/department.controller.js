@@ -207,7 +207,7 @@ const moveStudentDepartment = async (req, res, next) => {
 
     // Check student belongs to institution
     const student = await User.findById(studentId);
-    if (!student || student.institutionId.toString() !== req.institution._id.toString()) {
+    if (!student || student.institutionId?.toString() !== req.institution._id.toString()) {
       return res.status(403).json({ success: false, message: 'Student not in this institution' });
     }
 

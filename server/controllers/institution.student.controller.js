@@ -286,7 +286,7 @@ const removeStudent = async (req, res, next) => {
     if (!student) {
       return res.status(404).json({ success: false, message: 'Student not found' });
     }
-    if (student.institutionId.toString() !== req.institution._id.toString()) {
+    if (student.institutionId?.toString() !== req.institution._id.toString()) {
       return res.status(403).json({ success: false, message: 'Student does not belong to your institution' });
     }
 
@@ -319,7 +319,7 @@ const resetStudentPassword = async (req, res, next) => {
     if (!student) {
       return res.status(404).json({ success: false, message: 'Student not found' });
     }
-    if (student.institutionId.toString() !== req.institution._id.toString()) {
+    if (student.institutionId?.toString() !== req.institution._id.toString()) {
       return res.status(403).json({ success: false, message: 'Student does not belong to your institution' });
     }
 
