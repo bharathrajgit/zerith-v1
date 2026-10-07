@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
+const MonitoringSession = require('../models/MonitoringSession');
 const MalpracticeLog = require('../models/MalpracticeLog');
 const MonitoringEvidence = require('../models/MonitoringEvidence');
 
@@ -451,8 +452,23 @@ const reportViolation = async (req, res, next) => {
     if (topicId && mongoose.Types.ObjectId.isValid(topicId)) {
       logPayload.topicId = topicId;
     }
+    let validatedMonitoringSessionId = null;
+    if (sessionData?.monitoringSessionId && mongoose.Types.ObjectId.isValid(sessionData.monitoringSessionId)) {
+      const candidate = await MonitoringSession.findOne({
+        _id: sessionData.monitoringSessionId,
+        userId: user._id,
+        sessionType: resolvedSessionType,
+        status: 'active',
+      }).lean();
+      if (candidate) {
+        validatedMonitoringSessionId = candidate._id;
+      }
+    }
     if (assessmentId && mongoose.Types.ObjectId.isValid(assessmentId)) {
       logPayload.assessmentId = assessmentId;
+    }
+    if (validatedMonitoringSessionId) {
+      logPayload.monitoringSessionId = validatedMonitoringSessionId;
     }
 
     const log = await MalpracticeLog.create(logPayload);

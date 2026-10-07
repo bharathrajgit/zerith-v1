@@ -263,6 +263,7 @@ class AntiMalpracticeService {
         userId,
         assessmentId,
         institutionId: institutionId || null,
+        sessionType: sessionData?.sessionType || 'assessment',
         riskLevel: analysisResult.riskLevel,
         riskScore: analysisResult.riskScore,
         flags: analysisResult.flags,
@@ -286,6 +287,7 @@ class AntiMalpracticeService {
         mlCheatingProbability: Number(mlResult?.cheating_probability || 0),
         mlCheatingLabel: Number(mlResult?.predicted_label || 0),
         mlCheatingFallback: !!mlResult?.fallback,
+        monitoringSessionId: null,
       });
       return { saved: true, logId: log._id };
     } catch (err) {
