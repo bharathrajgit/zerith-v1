@@ -5,6 +5,7 @@ import StudentLayout from '../../components/layout/StudentLayout';
 import CameraMonitoringLayer from '../../components/common/CameraMonitoringLayer';
 import MonitoringConsentModal from '../../components/common/MonitoringConsentModal';
 import { LockScreen } from '../../components/malpractice/MalpracticeMonitor';
+import SocraticChat from '../../components/Chat/SocraticChat';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import usePracticeMonitoring from '../../hooks/usePracticeMonitoring';
@@ -87,9 +88,16 @@ export default function CodingPage() {
   const [screen, setScreen] = useState('loading');
 
   const canUseInstitutionScope = !!user?.institutionId;
+  const codeRef = useRef('');
   const lastWarningCountRef = useRef(0);
   const lastIsLockedRef = useRef(false);
   const lastFinalFlaggedRef = useRef(false);
+
+  useEffect(() => {
+    codeRef.current = code;
+  }, [code]);
+
+  const getCurrentCode = useCallback(() => codeRef.current, []);
 
   const handleMonitoringStatusChange = useCallback((nextState) => {
     // Only handle lock state changes if we're on the editor screen
@@ -1177,6 +1185,8 @@ export default function CodingPage() {
                   </button>
                 ))}
               </div>
+
+              <SocraticChat problemId={problemId} problemType="practice" getCurrentCode={getCurrentCode} />
 
               {activeTab === 'description' && (
                 <div style={{ display: 'grid', gap: '1rem' }}>
