@@ -1,14 +1,13 @@
 // server/controllers/institution.auth.controller.js
+const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Institution = require('../models/Institution');
 
 // Private helper – do NOT export
-const generateInstitutionToken = (institutionId) => {
-  return jwt.sign(
-    { id: institutionId, type: 'institution' },
-    process.env.JWT_SECRET,
-    { expiresIn: '30d' }
-  );
+const generateInstitutionToken = (institutionId, userId = null) => {
+  const payload = { id: institutionId, type: 'institution' };
+  if (userId) payload.userId = userId;
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
 // @desc    Register a new institution
@@ -108,21 +107,25 @@ const loginInstitution = async (req, res, next) => {
     }
 
     // Find institution and include password
-    const institution = await Institution.findOne({ email }).select('+password');
-    if (!institution) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials',
-      });
-    }
+    let institution = await Institution.findOne({ email }).select('+password');
 
-    // Check password – uses comparePassword (as defined in model)
-    const isMatch = await institution.comparePassword(password);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials',
-      });
+    if (!institution) {
+      const usersColl = mongoose.connection.collection('users');
+      const rawUser = await usersColl.findOne({ email, role: 'coordinator' });
+      if (rawUser && rawUser.tenantId) {
+        institution = await Institution.findById(rawUser.tenantId);
+        if (institution && institution.isActive) {
+          const isMatch = await require('bcryptjs').compare(password, rawUser.password);
+          if (isMatch) {
+            const token = generateInstitutionToken(institution._id);
+            const institutionData = institution.toObject();
+            delete institutionData.password;
+            delete institutionData.__v;
+            return res.status(200).json({ success: true, token, data: { institution: institutionData }, message: 'Login successful' });
+          }
+        }
+      }
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
     // Check if active

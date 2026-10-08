@@ -429,25 +429,33 @@ const getMalpracticeEvidence = async (req, res, next) => {
 const streamMalpracticeEvidenceImage = async (req, res, next) => {
   try {
     const evidence = await MonitoringEvidence.findById(req.params.evidenceId)
-      .select('malpracticeLogId contentType imageBuffer');
+      .select('institutionId userId monitoringSessionId malpracticeLogId contentType imageBuffer');
 
-    if (!evidence?.malpracticeLogId) {
+    if (!evidence) {
       return res.status(404).json({
         success: false,
         message: 'Evidence image not found',
       });
     }
 
-    const log = await MalpracticeLog.findOne({
-      _id: evidence.malpracticeLogId,
-      institutionId: req.institution._id,
-    }).select('_id');
-
-    if (!log) {
-      return res.status(404).json({
+    if (String(evidence.institutionId) !== String(req.institution._id)) {
+      return res.status(403).json({
         success: false,
-        message: 'Evidence image not found',
+        message: 'Not authorized',
       });
+    }
+
+    if (evidence.malpracticeLogId) {
+      const log = await MalpracticeLog.findOne({
+        _id: evidence.malpracticeLogId,
+        institutionId: req.institution._id,
+      }).select('_id');
+      if (!log) {
+        return res.status(404).json({
+          success: false,
+          message: 'Evidence image not found',
+        });
+      }
     }
 
     res.setHeader('Content-Type', evidence.contentType || 'image/jpeg');
