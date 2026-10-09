@@ -1,0 +1,461 @@
+{
+  "defaults": {
+    "normal": {
+      "aliases": [
+        "normal",
+        "focused",
+        "single_face",
+        "attentive",
+        "no_cheating"
+      ],
+      "paths": []
+    },
+    "gaze_away": {
+      "aliases": [
+        "gaze_away",
+        "looking_away",
+        "look_away",
+        "eye_contact_away"
+      ],
+      "paths": []
+    },
+    "head_pose_away": {
+      "aliases": [
+        "head_pose_away",
+        "turned_head",
+        "head_turn",
+        "head_pose"
+      ],
+      "paths": []
+    },
+    "multiple_faces": {
+      "aliases": [
+        "multiple_faces",
+        "two_people",
+        "multi_face"
+      ],
+      "paths": []
+    },
+    "face_missing": {
+      "aliases": [
+        "face_missing",
+        "no_face",
+        "missing_face"
+      ],
+      "paths": []
+    },
+    "phone_visible": {
+      "aliases": [
+        "phone_visible",
+        "phone_detected",
+        "mobile_phone",
+        "phone"
+      ],
+      "paths": []
+    },
+    "extra_screen_visible": {
+      "aliases": [
+        "extra_screen_visible",
+        "second_monitor",
+        "multiple_screens",
+        "extra_screen"
+      ],
+      "paths": []
+    }
+  },
+  "datasets": [
+    {
+      "slug": "ExamCheatingDataset",
+      "folder": "ExamCheatingDataset",
+      "aliases": {
+        "normal": {
+          "aliases": [
+            "test",
+            "train",
+            "images",
+            "cheating",
+            "normal act"
+          ],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [
+            "looking friend"
+          ],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [
+            "giving code",
+            "giving object"
+          ],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "HeadPoseDataset",
+      "folder": "HeadPoseDataset",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [
+            "HeadPoseDataset"
+          ],
+          "paths": [".", "HeadPoseDataset"]
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "HeadPoseDataset (2)",
+      "folder": "HeadPoseDataset (2)",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [
+            "HeadPoseDataset"
+          ],
+          "paths": [".", "HeadPoseDataset"]
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "metadata-test",
+      "folder": "metadata-test",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "Metahuman_tracking_1",
+      "folder": "Metahuman_tracking_1",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "Metahuman_tracking_2",
+      "folder": "Metahuman_tracking_2",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "Metahuman_tracking_3",
+      "folder": "Metahuman_tracking_3",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "Metahuman_tracking_4",
+      "folder": "Metahuman_tracking_4",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "Metahuman_tracking_large",
+      "folder": "Metahuman_tracking_large",
+      "aliases": {
+        "normal": {
+          "aliases": [],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "OEP database",
+      "folder": "OEP database",
+      "aliases": {
+        "normal": {
+          "aliases": [
+            "subject1",
+            "subject10",
+            "subject11",
+            "subject12",
+            "subject13",
+            "subject14",
+            "subject15",
+            "subject16",
+            "subject17",
+            "subject18",
+            "subject19",
+            "subject2",
+            "subject20",
+            "subject21",
+            "subject22",
+            "subject23",
+            "subject24",
+            "subject3",
+            "subject4",
+            "subject5",
+            "subject6",
+            "subject7",
+            "subject8",
+            "subject9"
+          ],
+          "paths": []
+        },
+        "gaze_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "head_pose_away": {
+          "aliases": [],
+          "paths": []
+        },
+        "multiple_faces": {
+          "aliases": [],
+          "paths": []
+        },
+        "face_missing": {
+          "aliases": [],
+          "paths": []
+        },
+        "phone_visible": {
+          "aliases": [],
+          "paths": []
+        },
+        "extra_screen_visible": {
+          "aliases": [],
+          "paths": []
+        }
+      }
+    }
+  ],
+  "synthetic": {
+    "referenceLabels": [
+      "normal",
+      "gaze_away",
+      "head_pose_away",
+      "phone_visible"
+    ],
+    "targets": {
+      "multiple_faces": "multiple_faces",
+      "face_missing": "face_missing",
+      "extra_screen_visible": "extra_screen_visible"
+    }
+  }
+}

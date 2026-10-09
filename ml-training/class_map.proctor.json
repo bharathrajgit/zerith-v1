@@ -1,0 +1,93 @@
+{
+  "defaults": {
+    "normal": {
+      "aliases": ["normal", "focused", "single_face", "attentive", "no_cheating", "normal act"],
+      "paths": []
+    },
+    "gaze_away": {
+      "aliases": ["gaze_away", "looking_away", "look_away", "eye_contact_away", "looking friend"],
+      "paths": []
+    },
+    "head_pose_away": {
+      "aliases": ["head_pose_away", "turned_head", "head_turn", "head_pose"],
+      "paths": []
+    },
+    "multiple_faces": {
+      "aliases": ["multiple_faces", "two_people", "multi_face"],
+      "paths": []
+    },
+    "face_missing": {
+      "aliases": ["face_missing", "no_face", "missing_face"],
+      "paths": []
+    },
+    "phone_visible": {
+      "aliases": ["phone_visible", "phone_detected", "mobile_phone", "phone", "giving object"],
+      "paths": []
+    },
+    "extra_screen_visible": {
+      "aliases": ["extra_screen_visible", "second_monitor", "multiple_screens", "extra_screen"],
+      "paths": []
+    }
+  },
+  "datasets": [
+    {
+      "slug": "ardutraagiginting/exam-cheating-dataset",
+      "folder": "ExamCheatingDataset",
+      "aliases": {
+        "normal": {
+          "aliases": ["normal", "focused", "non_cheating", "normal act"],
+          "paths": ["train/normal act"]
+        },
+        "gaze_away": {
+          "aliases": ["gaze_away", "looking_away", "cheating_eye_movement", "looking friend"],
+          "paths": ["train/looking friend"]
+        },
+        "phone_visible": {
+          "aliases": ["phone_visible", "phone", "mobile_phone", "giving object"],
+          "paths": ["train/giving object"]
+        },
+        "head_pose_away": {
+          "aliases": ["head_pose_away", "turned_head", "head_turn", "head_pose", "giving code", "cheating"],
+          "paths": ["train/giving code"]
+        },
+        "multiple_faces": {
+          "aliases": ["multiple_faces", "cheating"],
+          "paths": ["train/cheating"]
+        }
+      }
+    },
+    {
+      "slug": "dataclusterlabs/mobile-phone-image-dataset",
+      "folder": "Mobile_image",
+      "aliases": {
+        "phone_visible": {
+          "aliases": ["phone_visible", "phone", "mobile_phone", "smartphone"],
+          "paths": []
+        }
+      }
+    },
+    {
+      "slug": "metahuman-tracking-dataset",
+      "folder": "Metahuman_tracking_1",
+      "aliases": {
+        "head_pose_away": {
+          "aliases": ["head_pose_away", "turned_head", "head_turn", "head_pose"],
+          "paths": [""]
+        },
+        "gaze_away": {
+          "aliases": ["gaze_away", "looking_away"],
+          "paths": [""]
+        }
+      }
+    }
+  ],
+  "synthetic": {
+    "referenceLabels": ["normal", "gaze_away", "head_pose_away", "phone_visible"],
+    "targets": {
+      "multiple_faces": "multiple_faces",
+      "face_missing": "face_missing",
+      "extra_screen_visible": "extra_screen_visible",
+      "phone_visible": "phone_visible"
+    }
+  }
+}

@@ -722,7 +722,23 @@ export default function usePracticeMonitoring({
         annotations: localAnalysis?.annotations || [],
       });
 
-      await syncLocalVisionViolation(localAnalysis);
+      const imageData = (() => {
+        if (!canvasRef.current || !captureVideoRef.current) return '';
+        const sourceWidth = captureVideoRef.current.videoWidth || 320;
+        const sourceHeight = captureVideoRef.current.videoHeight || 240;
+        const maxWidth = 640;
+        const scale = sourceWidth > maxWidth ? maxWidth / sourceWidth : 1;
+        const width = Math.max(1, Math.round(sourceWidth * scale));
+        const height = Math.max(1, Math.round(sourceHeight * scale));
+        canvasRef.current.width = width;
+        canvasRef.current.height = height;
+        const context = canvasRef.current.getContext('2d', { willReadFrequently: true });
+        if (!context) return '';
+        context.drawImage(captureVideoRef.current, 0, 0, width, height);
+        return canvasRef.current.toDataURL('image/jpeg', 0.62);
+      })();
+
+      await syncLocalVisionViolation({ ...localAnalysis, violationImage: imageData || localAnalysis?.violationImage || '' });
       return localAnalysis;
     };
 
@@ -787,7 +803,22 @@ export default function usePracticeMonitoring({
             // Server fallback returned no findings; keep the local overlay instead of clearing it.
             updateSessionState(nextState);
             if (nextState?.mlFallback && localAnalysis?.primaryViolationType) {
-              await syncLocalVisionViolation(localAnalysis, { fullModeFallback: true, serverState: nextState });
+              const imageData = (() => {
+                if (!canvasRef.current || !captureVideoRef.current) return '';
+                const sourceWidth = captureVideoRef.current.videoWidth || 320;
+                const sourceHeight = captureVideoRef.current.videoHeight || 240;
+                const maxWidth = 640;
+                const scale = sourceWidth > maxWidth ? maxWidth / sourceWidth : 1;
+                const width = Math.max(1, Math.round(sourceWidth * scale));
+                const height = Math.max(1, Math.round(sourceHeight * scale));
+                canvasRef.current.width = width;
+                canvasRef.current.height = height;
+                const context = canvasRef.current.getContext('2d', { willReadFrequently: true });
+                if (!context) return '';
+                context.drawImage(captureVideoRef.current, 0, 0, width, height);
+                return canvasRef.current.toDataURL('image/jpeg', 0.62);
+              })();
+              await syncLocalVisionViolation({ ...localAnalysis, violationImage: imageData || localAnalysis?.violationImage || '' }, { fullModeFallback: true, serverState: nextState });
             }
           } else if (serverDetections) {
             applyVisionState(nextState || {});

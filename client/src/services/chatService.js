@@ -8,9 +8,17 @@ export const sendMessage = (problemId, message, currentCode = '', problemType = 
     message,
     currentCode,
     problemType,
-  });
+  }, { timeout: 180000 });
+
+export const sendAssistantMessage = (message, context = {}, history = []) =>
+  api.post('/chat/assistant', {
+    message,
+    context,
+    history,
+  }, { timeout: 180000 });
 
 export default {
   getChat,
   sendMessage,
+  sendAssistantMessage,
 };

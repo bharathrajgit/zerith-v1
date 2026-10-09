@@ -23,10 +23,26 @@ __pycache__/
 venv/
 ml-service/venv/
 ml-training/.kaggle/kaggle.json
+ml-service/malpractices/dataset
+
+# Local editor files and one-off artifacts
+.vscode/launch.json
+UserData.md
+session-summary.md
+*.bak
 
 # Build output
 client/dist/
 userAndPassword.md
 
-# Downloaded YOLO weights
+# Generated ML datasets, training output, and model weights
+ml-training/data/
+ml-training/artifacts/
+ml-training/runs/
+ml-service/malpractices/runs/
+/runs/
+ml-service/malpractices/*.pt
+ml-service/malpractices/*.onnx
+ml-service/malpractices/*.tflite
+ml-service/malpractices/*.dat
 ml-service/trained_models/*.pt

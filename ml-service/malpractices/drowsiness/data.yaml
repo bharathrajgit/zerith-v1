@@ -1,0 +1,9 @@
+# Drowsiness Detection Dataset Configuration
+
+path: ../drowsiness_yolo
+train: train
+val: val
+test: test
+
+nc: 2
+names: ['Drowsy', 'Non Drowsy']

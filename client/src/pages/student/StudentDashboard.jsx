@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import StudentLayout from '../../components/layout/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
-import { getChatResponse } from '../../services/geminiService';
+import { sendAssistantMessage } from '../../services/chatService';
 import {
   Flame, TrendingUp, BookOpen, Brain, Code2, PlayCircle,
   Send, X, Bot, ChevronRight, Check, Calendar,
@@ -676,10 +676,13 @@ export default function StudentDashboardPage() {
     setChatMessages(msgs); setChatInput(''); setChatLoading(true);
     const ctx = { topic: roadmap?.currentWeek ? currentWeekObj?.topic : 'General', currentLevel: user?.currentLevel || 'Beginner' };
     try {
-      const reply = await getChatResponse(msg, ctx);
-      setChatMessages([...msgs, { role: 'assistant', content: reply || "I'm having trouble connecting." }]);
-    } catch {
-      setChatMessages([...msgs, { role: 'assistant', content: "I'm having trouble connecting." }]);
+      const response = await sendAssistantMessage(msg, ctx, chatMessages.slice(-10));
+      const reply = response.data?.data?.reply;
+      if (!reply) throw new Error('The chatbot returned an empty response');
+      setChatMessages([...msgs, { role: 'assistant', content: reply }]);
+    } catch (error) {
+      const message = error.response?.data?.message || 'The learning assistant is temporarily unavailable. Please try again.';
+      setChatMessages([...msgs, { role: 'assistant', content: message }]);
     } finally { setChatLoading(false); }
   };
 

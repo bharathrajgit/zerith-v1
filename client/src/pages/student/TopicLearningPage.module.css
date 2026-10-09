@@ -223,9 +223,9 @@
 
 .videoContainer {
   position: relative; 
-  padding-bottom: 56.25%; 
-  height: 0; 
-  overflow: hidden;
+  padding-bottom: 0;
+  height: auto;
+  overflow: visible;
   border-radius: 20px; 
   background: black; 
   margin-bottom: 1rem;

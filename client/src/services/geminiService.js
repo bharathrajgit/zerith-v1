@@ -75,25 +75,4 @@ Response: plain text only`;
   return callGemini(prompt);
 };
 
-/**
- * getChatResponse — conversational DSA assistant response.
- * @param {string} userMessage - The student's question or message
- * @param {object} context     - { topic: string, level: string }
- * @returns {Promise<string|null>}
- */
-export const getChatResponse = async (userMessage, context = {}) => {
-  const { topic = "General DSA", level = "Beginner" } = context;
-
-  const prompt = `You are a Java DSA assistant.
-Student level: ${level}
-Current topic: ${topic}
-Answer Java DSA questions only. Be concise and educational.
-
-Student's message: ${userMessage}
-
-Response: plain text only, no markdown formatting`;
-
-  return callGemini(prompt);
-};
-
-export default { getHint, explainAnswer, getChatResponse };
+export default { getHint, explainAnswer };

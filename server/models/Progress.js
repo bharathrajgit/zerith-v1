@@ -65,6 +65,24 @@ const progressSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    videoPosition: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    maxWatchedTime: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    lastProgressAt: {
+      type: Date,
+      default: null,
+    },
+    videoCompleted: {
+      type: Boolean,
+      default: false,
+    },
     lastAttemptAt: {
       type: Date,
       default: null,

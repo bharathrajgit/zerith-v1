@@ -1,14 +1,37 @@
 // client/src/pages/student/TopicLearningPage.jsx
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import StudentLayout from '../../components/layout/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
+import VerifiedYouTubePlayer from '../../components/video/VerifiedYouTubePlayer';
 import { Check, Lock, Clock, ArrowLeft } from 'lucide-react';
 import styles from './TopicLearningPage.module.css';
 
 const STEPS = ['Watch Video', 'MCQ Round', 'Coding Problem'];
+
+const getVideoId = (url) => {
+  if (!url) return '';
+  const trimmed = String(url).trim();
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname.includes('youtu.be')) {
+      return parsed.pathname.slice(1);
+    }
+    const params = parsed.searchParams;
+    if (params.has('v')) return params.get('v');
+    const pathMatch = parsed.pathname.match(/embed\/([A-Za-z0-9_-]{11})/);
+    if (pathMatch) return pathMatch[1];
+  } catch {
+    // Not a full URL, fall back to raw string parsing below.
+  }
+
+  const beforeParams = trimmed.split('?')[0].split('&')[0];
+  const match = beforeParams.match(/^([A-Za-z0-9_-]{11})$/);
+  return match ? match[1] : '';
+};
 
 export default function TopicLearningPage() {
   const { topicId } = useParams();
@@ -72,9 +95,10 @@ export default function TopicLearningPage() {
           const watchedVideos = watchedRes.data?.data?.watchedVideos || [];
           const watchedSet = new Set(watchedVideos.map(String));
           const resolvedVideoId = getVideoId(topicData?.videoUrl);
-          if (watchedSet.has(String(topicId)) || (resolvedVideoId && watchedSet.has(resolvedVideoId))) {
-            setVideoWatched(true);
-          }
+          const legacyVideoWatched = watchedSet.has(String(topicId))
+            || (resolvedVideoId && watchedSet.has(resolvedVideoId));
+          const loadedProgress = progressRes?.data?.data?.progress || null;
+          setVideoWatched(Boolean(legacyVideoWatched || loadedProgress?.videoCompleted));
         } else {
           setError(topicRes.data.message || 'Failed to load topic data');
           return;
@@ -94,13 +118,6 @@ export default function TopicLearningPage() {
     fetchData();
   }, [topicId, guardChecked]);
 
-  // Persist video completion locally so refresh keeps the step unlocked.
-  useEffect(() => {
-    const key = `dsa_video_watched_${topicId}`;
-    const saved = localStorage.getItem(key);
-    if (saved === '1') setVideoWatched(true);
-  }, [topicId]);
-
   // Determine current step based on progress
   const getCurrentStep = () => {
     if (!progress) return videoWatched ? 1 : 0;
@@ -116,30 +133,20 @@ export default function TopicLearningPage() {
 
   const parseYoutubeTime = (url, key) => {
     if (!url) return undefined;
-    const match = url.match(new RegExp(`${key}=([0-9]+)s?`));
-    return match ? Number(match[1]) : undefined;
-  };
-
-  const getVideoId = (url) => {
-    if (!url) return '';
-    const trimmed = String(url).trim();
-
+    let value;
     try {
-      const parsed = new URL(trimmed);
-      if (parsed.hostname.includes('youtu.be')) {
-        return parsed.pathname.slice(1);
-      }
-      const params = parsed.searchParams;
-      if (params.has('v')) return params.get('v');
-      const pathMatch = parsed.pathname.match(/embed\/([A-Za-z0-9_-]{11})/);
-      if (pathMatch) return pathMatch[1];
+      value = new URL(url).searchParams.get(key);
     } catch {
-      // Not a full URL, fall back to raw string parsing below
+      const match = String(url).match(new RegExp(`[?&]${key}=([^&]+)`));
+      value = match?.[1];
     }
-
-    const beforeParams = trimmed.split('?')[0].split('&')[0];
-    const match = beforeParams.match(/^([A-Za-z0-9_-]{11})$/);
-    return match ? match[1] : '';
+    if (!value) return undefined;
+    if (/^\d+$/.test(value)) return Number(value);
+    const match = value.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+    if (!match) return undefined;
+    return (Number(match[1] || 0) * 3600)
+      + (Number(match[2] || 0) * 60)
+      + Number(match[3] || 0);
   };
 
   const videoAssets = useMemo(() => {
@@ -170,24 +177,19 @@ export default function TopicLearningPage() {
   const videoId = getVideoId(primaryVideo?.videoId || topic?.videoUrl);
   const hasValidVideo = Boolean(videoId);
   const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(primaryVideo?.title || topic?.videoTitle || topic?.title || 'DSA topic video')}`;
-  const videoParams = new URLSearchParams({ controls: 1, modestbranding: 1, rel: 0, origin: window.location.origin });
-  if (startSeconds > 0) videoParams.set('start', Math.floor(startSeconds));
-  if (endSeconds > 0) videoParams.set('end', Math.floor(endSeconds));
-  const embedUrl = hasValidVideo ? `https://www.youtube.com/embed/${videoId}?${videoParams.toString()}` : '';
-
-  const markVideoWatched = async () => {
-    const key = `dsa_video_watched_${topicId}`;
-    localStorage.setItem(key, '1');
-    setVideoWatched(true);
-    try {
-      await api.put('/roadmap/complete-task', {
-        topicId,
-        taskType: 'video',
-      });
-    } catch {
-      toast.error('Video was marked locally, but roadmap sync failed.');
-    }
-  };
+  const configuredVideoDuration = Number(primaryVideo?.durationMinutes || topic?.videoDuration || 0) * 60;
+  const videoDurationSeconds = endSeconds > startSeconds
+    ? endSeconds - startSeconds
+    : configuredVideoDuration;
+  const handleVideoProgressSaved = useCallback((saved) => {
+    setProgress((current) => ({
+      ...(current || {}),
+      videoPosition: Number(saved.currentTime) || 0,
+      maxWatchedTime: Number(saved.maxWatchedTime) || 0,
+      videoCompleted: Boolean(saved.completed),
+    }));
+    if (saved.completed) setVideoWatched(true);
+  }, []);
 
   const canStartBasic = videoWatched;
   const canStartCoding = canStartBasic && (progress?.round1Score || 0) >= 80;
@@ -288,12 +290,17 @@ export default function TopicLearningPage() {
           <h2 className={styles.sectionTitle}>1. Watch Video</h2>
           {hasValidVideo ? (
             <div className={styles.videoContainer}>
-              <iframe
-                src={embedUrl}
+              <VerifiedYouTubePlayer
+                topicId={topicId}
+                videoId={videoId}
                 title={primaryVideo?.title || topic.videoTitle || topic.title}
-                className={styles.videoIframe}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
-                allowFullScreen
+                startSeconds={startSeconds}
+                endSeconds={endSeconds}
+                durationSeconds={videoDurationSeconds}
+                currentTime={progress?.videoPosition || 0}
+                maxWatchedTime={progress?.maxWatchedTime || progress?.videoPosition || 0}
+                isCompleted={videoWatched || Boolean(progress?.videoCompleted)}
+                onProgressSaved={handleVideoProgressSaved}
               />
             </div>
           ) : (
@@ -310,31 +317,9 @@ export default function TopicLearningPage() {
             <p className={styles.videoTitle}>{primaryVideo?.title || topic.videoTitle}</p>
             <span className={styles.durationBadge}><Clock size={12} /> {primaryVideo?.durationMinutes || topic.videoDuration} min</span>
           </div>
-          {videoWatched ? (
-            <div className={styles.watchedBadge}><Check size={16} /> Watched!</div>
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-              <div className={styles.lockedTag}>
-                <Lock size={12} /> Watch the video to unlock MCQs
-              </div>
-              <button
-                onClick={markVideoWatched}
-                style={{
-                  background: 'rgba(99, 102, 241, 0.15)',
-                  border: '1px solid rgba(99, 102, 241, 0.3)',
-                  color: '#a5b4fc',
-                  padding: '0.4rem 1rem',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  transition: 'all 0.2s ease',
-                }}
-              >
-                I've watched this ✓
-              </button>
-            </div>
-          )}
+          {videoWatched
+            ? <div className={styles.watchedBadge}><Check size={16} /> Watched!</div>
+            : <div className={styles.lockedTag}><Lock size={12} /> Watch at least 90% to unlock MCQs</div>}
         </section>
 
         {supplementalVideos.length > 0 && (

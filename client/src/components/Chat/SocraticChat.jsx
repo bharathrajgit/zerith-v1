@@ -85,6 +85,7 @@ export default function SocraticChat({ problemId, problemType = 'practice', getC
       const normalizedMessages = history.map((message) => ({
         role: message.role,
         content: message.content,
+        sources: message.sources || [],
         timestamp: message.timestamp || new Date().toISOString(),
       }));
 
@@ -144,14 +145,19 @@ export default function SocraticChat({ problemId, problemType = 'practice', getC
       const assistantMessage = {
         role: 'assistant',
         content: assistantReply,
+        sources: response?.data?.data?.sources || [],
         timestamp: new Date().toISOString(),
       };
 
       setMessages([...optimisticMessages, assistantMessage]);
     } catch (error) {
+      const serviceError = error?.response?.data?.message;
+      const diagnostic = error?.response?.data?.details;
       setMessages([...optimisticMessages, {
         role: 'assistant',
-        content: 'I’m having trouble thinking right now. Try again in a moment!',
+        content: serviceError
+          ? `${serviceError}${diagnostic ? `\n${diagnostic}` : ''}`
+          : 'I’m having trouble thinking right now. Try again in a moment!',
         timestamp: new Date().toISOString(),
       }]);
     } finally {
@@ -272,6 +278,18 @@ export default function SocraticChat({ problemId, problemType = 'practice', getC
                       }}>
                         {formatTime(message.timestamp)}
                       </div>
+                      {message.sources?.length > 0 && (
+                        <div style={{
+                          marginTop: '8px',
+                          paddingTop: '6px',
+                          borderTop: '1px solid rgba(148, 163, 184, 0.28)',
+                          color: isUser ? 'rgba(255,255,255,0.82)' : '#64748b',
+                          fontSize: '10px',
+                          lineHeight: 1.4,
+                        }}>
+                          References: {message.sources.map((source) => source.source).join(', ')}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

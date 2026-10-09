@@ -16,6 +16,11 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    sources: [{
+      source: { type: String, trim: true },
+      chunkIndex: { type: Number, min: 0 },
+      score: { type: Number },
+    }],
   },
   { _id: false }
 );

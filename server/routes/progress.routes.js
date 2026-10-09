@@ -7,6 +7,7 @@ const {
   getTopicProgress,
   updateTopicUnlock,
   completeCodingAndUnlock,
+  updateVideoProgress,
 } = require('../controllers/progress.controller');
 
 router.use(protect);
@@ -15,6 +16,7 @@ router.use(protect);
 router.get('/', getUserProgress);
 router.post('/unlock', updateTopicUnlock);   // ← specific path before :topicId
 router.post('/coding-complete', completeCodingAndUnlock);
+router.put('/:topicId/video-progress', updateVideoProgress);
 
 // Parameterised route last
 router.get('/:topicId', getTopicProgress);

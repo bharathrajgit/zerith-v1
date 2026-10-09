@@ -1,12 +1,9 @@
 const User = require('../models/User');
-const Topic = require('../models/Topic');
 const {
   generateRoadmap,
   isLegacyRoadmap,
-  markVideoCompleted,
   syncRoadmapForUser,
 } = require('../services/roadmapGenerator');
-const { logActivity } = require('../services/streakService');
 
 const generateRoadmapHandler = async (req, res, next) => {
   try {
@@ -96,42 +93,10 @@ const getRoadmap = async (req, res, next) => {
 };
 
 const updateDayCompletion = async (req, res, next) => {
-  try {
-    const { topicId, taskType } = req.body;
-
-    if (!topicId || !taskType) {
-      return res.status(400).json({
-        success: false,
-        message: 'topicId and taskType are required',
-      });
-    }
-
-    if (taskType !== 'video') {
-      return res.status(400).json({
-        success: false,
-        message: 'Only video completion is supported from this endpoint',
-      });
-    }
-
-    const synced = await markVideoCompleted(req.user._id, topicId);
-    if (!synced?.roadmap) {
-      return res.status(404).json({
-        success: false,
-        message: 'Roadmap not found',
-      });
-    }
-
-    const topic = await Topic.findById(topicId).select('title').lean();
-    await logActivity(req.user._id, 1, 15, [topic?.title || 'Video Lesson']);
-
-    res.status(200).json({
-      success: true,
-      data: { roadmap: synced.roadmap, recapModules: synced.recapModules || [] },
-      message: 'Task completed',
-    });
-  } catch (err) {
-    next(err);
-  }
+  return res.status(410).json({
+    success: false,
+    message: 'Video completion is recorded only after verified playback.',
+  });
 };
 
 module.exports = {

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import toast from 'react-hot-toast';
 import { CheckCircle2, Lock, PlayCircle } from 'lucide-react';
 import StudentLayout from '../../components/layout/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
@@ -46,8 +45,8 @@ const getVideoId = (videoUrl) => {
   }
 };
 
-const TopicRow = ({ topic, watched, onMarkWatched, marking, onStart }) => {
-  const isWatched = watched.has(getVideoId(topic.videoUrl));
+const TopicRow = ({ topic, watched, onStart }) => {
+  const isWatched = watched.has(String(topic._id)) || watched.has(getVideoId(topic.videoUrl));
   const isLocked = !topic.accessible || !topic.unlocked;
 
   return (
@@ -69,13 +68,7 @@ const TopicRow = ({ topic, watched, onMarkWatched, marking, onStart }) => {
             Watched
           </span>
         ) : topic.unlocked ? (
-          <button
-            className={styles.secondaryBtn}
-            onClick={() => onMarkWatched(topic)}
-            disabled={marking}
-          >
-            {marking ? 'Saving...' : 'Mark Watched'}
-          </button>
+          <span className={styles.lockedBadge}>Watch to unlock</span>
         ) : (
           <span className={styles.lockedBadge}>
             <Lock size={14} />
@@ -103,7 +96,6 @@ export default function CoursePage() {
   const [progression, setProgression] = useState(null);
   const [watchedVideos, setWatchedVideos] = useState(new Set());
   const [activeTab, setActiveTab] = useState('Beginner');
-  const [markingVideoId, setMarkingVideoId] = useState('');
 
   useEffect(() => {
     const loadData = async () => {
@@ -118,7 +110,7 @@ export default function CoursePage() {
         const progressionData = progressionRes.data?.data;
         const watched = watchedRes.data?.data?.watchedVideos || [];
         setProgression(progressionData);
-        setWatchedVideos(new Set(watched));
+        setWatchedVideos(new Set(watched.map(String)));
         setActiveTab(normalizeLevel(progressionData?.currentLevel));
       } catch (err) {
         setError(err?.response?.data?.message || 'Failed to load course progression.');
@@ -136,34 +128,6 @@ export default function CoursePage() {
       (mod) => (DIFFICULTY_RANK[getTrackLabel(mod)] || 1) === (DIFFICULTY_RANK[activeTab] || 1)
     ),
   [progression, activeTab]);
-
-  const markWatched = async (topic) => {
-    const videoId = getVideoId(topic?.videoUrl);
-    if (!videoId || !topic?._id) return;
-    setMarkingVideoId(videoId);
-    try {
-      const [res, progressionRes] = await Promise.all([
-        api.post('/videos/watched', { videoId }),
-        api.put('/roadmap/complete-task', {
-          topicId: topic._id,
-          taskType: 'video',
-        }),
-      ]);
-      const updated = res.data?.data?.watchedVideos || [];
-      setWatchedVideos(new Set(updated));
-      if (progressionRes.data?.success) {
-        const freshProgression = await api.get('/progression');
-        if (freshProgression.data?.success) {
-          setProgression(freshProgression.data.data);
-        }
-      }
-      toast.success('Video marked as watched.');
-    } catch (err) {
-      toast.error(err?.response?.data?.message || 'Failed to mark video as watched.');
-    } finally {
-      setMarkingVideoId('');
-    }
-  };
 
   const renderModule = (mod) => (
     <section key={mod._id} className={styles.moduleCard}>
@@ -194,8 +158,6 @@ export default function CoursePage() {
             key={topic._id}
             topic={topic}
             watched={watchedVideos}
-            marking={markingVideoId === getVideoId(topic.videoUrl)}
-            onMarkWatched={markWatched}
             onStart={(topicId) => navigate(`/topic/${topicId}`)}
           />
         ))}

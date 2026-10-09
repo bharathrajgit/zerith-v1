@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const CodingProblem = require('../models/CodingProblem');
 const PerformanceLog = require('../models/PerformanceLog');
 const Progress = require('../models/Progress');
@@ -11,6 +12,67 @@ const {
   getTopicProgressionState,
 } = require('../services/progressionService');
 const { logActivity } = require('../services/streakService');
+const { markVideoCompleted } = require('../services/roadmapGenerator');
+
+const VIDEO_PROGRESS_MAX_SPEED = 1.5;
+const VIDEO_PROGRESS_TOLERANCE_SECONDS = 10;
+
+const parseYouTubeTime = (value) => {
+  if (!value) return 0;
+  if (/^\d+$/.test(String(value))) return Number(value);
+  const match = String(value).match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (!match) return 0;
+  return (Number(match[1] || 0) * 3600)
+    + (Number(match[2] || 0) * 60)
+    + Number(match[3] || 0);
+};
+
+const getConfiguredVideoRange = (topic) => {
+  let startSeconds = Math.max(0, Number(topic?.videoStartSeconds ?? topic?.startSeconds ?? 0));
+  let endSeconds = Math.max(0, Number(topic?.videoEndSeconds ?? topic?.endSeconds ?? 0));
+
+  try {
+    const videoUrl = new URL(topic?.videoUrl);
+    if (!startSeconds) {
+      startSeconds = parseYouTubeTime(videoUrl.searchParams.get('start') || videoUrl.searchParams.get('t'));
+    }
+    if (!endSeconds) endSeconds = parseYouTubeTime(videoUrl.searchParams.get('end'));
+  } catch {
+    // Topics may store a bare video ID instead of a URL.
+  }
+
+  return { startSeconds, endSeconds };
+};
+
+const getTrustedVideoDurationSeconds = (topic) => {
+  const { startSeconds, endSeconds } = getConfiguredVideoRange(topic);
+  if (endSeconds > startSeconds) return endSeconds - startSeconds;
+
+  const primaryAsset = (topic?.learningAssets || []).find(
+    (asset) => asset?.type === 'video' && asset?.videoId
+  );
+  const durationMinutes = Number(primaryAsset?.durationMinutes || topic?.videoDuration || 0);
+  return durationMinutes > 0 ? durationMinutes * 60 : 0;
+};
+
+const calculateVideoProgress = ({ previousMax, currentTime, lastProgressAt, now, duration }) => {
+  const safeDuration = Math.max(0, Number(duration) || 0);
+  const safePreviousMax = Math.max(0, Math.min(Number(previousMax) || 0, safeDuration));
+  const requestedTime = Math.max(0, Math.min(Number(currentTime) || 0, safeDuration));
+  const elapsedSeconds = lastProgressAt
+    ? Math.max(0, (now.getTime() - new Date(lastProgressAt).getTime()) / 1000)
+    : 0;
+  const allowedMax = Math.min(
+    safeDuration,
+    safePreviousMax + (elapsedSeconds * VIDEO_PROGRESS_MAX_SPEED) + VIDEO_PROGRESS_TOLERANCE_SECONDS
+  );
+  const acceptedTime = Math.min(requestedTime, Math.max(safePreviousMax, allowedMax));
+
+  return {
+    currentTime: acceptedTime,
+    maxWatchedTime: Math.max(safePreviousMax, acceptedTime),
+  };
+};
 
 const buildRecentPerformance = (logs = []) => {
   const today = new Date();
@@ -226,6 +288,128 @@ const getTopicProgress = async (req, res, next) => {
   }
 };
 
+const updateVideoProgress = async (req, res, next) => {
+  try {
+    const { topicId } = req.params;
+    const currentTime = Number(req.body?.currentTime);
+    if (!mongoose.Types.ObjectId.isValid(topicId)) {
+      return res.status(400).json({ success: false, message: 'Invalid topicId' });
+    }
+    if (!Number.isFinite(currentTime) || currentTime < 0) {
+      return res.status(400).json({ success: false, message: 'A valid currentTime is required' });
+    }
+
+    const topic = await Topic.findById(topicId).lean();
+    if (!topic) {
+      return res.status(404).json({ success: false, message: 'Topic not found' });
+    }
+
+    const progression = await buildProgressionForUser(req.user);
+    const topicState = getTopicProgressionState(progression, topic._id);
+    if (!topicState?.topic?.unlocked) {
+      return res.status(403).json({
+        success: false,
+        message: 'This topic is locked for your current progression.',
+      });
+    }
+
+    const duration = getTrustedVideoDurationSeconds(topic);
+    if (!duration) {
+      return res.status(422).json({
+        success: false,
+        message: 'A trusted video duration must be configured for this topic.',
+      });
+    }
+
+    let progress = await Progress.findOne({
+      userId: req.user._id,
+      topicId: topic._id,
+    });
+    if (!progress) {
+      progress = await Progress.create({
+        userId: req.user._id,
+        topicId: topic._id,
+        moduleId: topic.moduleId,
+        status: 'InProgress',
+      });
+    }
+
+    const videoIds = new Set([String(topic._id)]);
+    const parseVideoId = (value) => {
+      const raw = String(value || '').trim();
+      if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+      try {
+        const parsed = new URL(raw);
+        if (parsed.hostname.includes('youtu.be')) return parsed.pathname.slice(1);
+        if (parsed.searchParams.has('v')) return parsed.searchParams.get('v');
+        return parsed.pathname.match(/embed\/([A-Za-z0-9_-]{11})/)?.[1] || '';
+      } catch {
+        return '';
+      }
+    };
+    const primaryVideoId = parseVideoId(topic.videoUrl);
+    if (primaryVideoId) videoIds.add(primaryVideoId);
+    (topic.learningAssets || []).forEach((asset) => {
+      if (asset?.type === 'video' && asset.videoId) {
+        videoIds.add(String(asset.videoId));
+      }
+    });
+    const user = await User.findById(req.user._id).select('watchedVideos');
+    const completedForLegacyUser = (user?.watchedVideos || [])
+      .some((videoId) => videoIds.has(String(videoId)));
+
+    const previousMax = Math.max(
+      Number(progress.maxWatchedTime || 0),
+      Number(progress.videoPosition || 0),
+      Number(progress.currentTime || 0),
+      Number(progress.watchPosition || 0)
+    );
+    const wasCompleted = Boolean(progress.videoCompleted || completedForLegacyUser);
+    let completed = wasCompleted;
+
+    if (!wasCompleted) {
+      const now = new Date();
+      const acceptedProgress = calculateVideoProgress({
+        previousMax,
+        currentTime,
+        lastProgressAt: progress.lastProgressAt,
+        now,
+        duration,
+      });
+
+      progress.videoPosition = acceptedProgress.currentTime;
+      progress.maxWatchedTime = acceptedProgress.maxWatchedTime;
+      progress.lastProgressAt = now;
+      completed = acceptedProgress.maxWatchedTime >= duration * 0.9;
+      if (completed) {
+        progress.videoCompleted = true;
+      }
+      if (progress.status === 'Locked' || progress.status === 'Unlocked') {
+        progress.status = 'InProgress';
+      }
+      await progress.save();
+
+      if (completed) {
+        await markVideoCompleted(req.user._id, topic._id);
+        await logActivity(req.user._id, 1, 15, [topic.title || 'Video Lesson']);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        currentTime: Number(progress.videoPosition || 0),
+        maxWatchedTime: Math.max(previousMax, Number(progress.maxWatchedTime || 0)),
+        completed,
+        duration,
+      },
+      message: 'Video progress saved',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const initializeProgress = async (userId, topicId, moduleId) => {
   let progress = await Progress.findOne({ userId, topicId });
   if (!progress) {
@@ -394,4 +578,8 @@ module.exports = {
   initializeProgress,
   updateTopicUnlock,
   completeCodingAndUnlock,
+  updateVideoProgress,
+  getTrustedVideoDurationSeconds,
+  getTrustedVideoDurationSeconds,
+  calculateVideoProgress,
 };

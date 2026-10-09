@@ -1,0 +1,8 @@
+# Save as: ml-service/datasets/phone/data.yaml
+
+path: D:\VS Code Folder\dsa-platform\ml-service\malpractices\dataset\Phone Finder 2.0.v3i.yolov8
+train: train/images
+val: valid/images
+
+nc: 1
+names: ['phone']

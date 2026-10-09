@@ -617,8 +617,16 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
     const logIds = logs.map((log) => log._id);
     const sessionIds = logs.map((log) => log.monitoringSessionId).filter(Boolean);
     
-    // Query evidence by monitoringSessionId to capture all evidence for the session
-    const latestEvidence = sessionIds.length
+    const latestEvidenceByLog = logIds.length
+      ? await MonitoringEvidence.aggregate([
+          { $match: { malpracticeLogId: { $in: logIds } } },
+          { $sort: { capturedAt: -1, _id: -1 } },
+          { $group: { _id: '$malpracticeLogId', evidenceId: { $first: '$_id' }, capturedAt: { $first: '$capturedAt' } } },
+        ])
+      : [];
+
+    // Older monitoring captures may be linked to a session instead of an individual log.
+    const latestEvidenceBySession = sessionIds.length
       ? await MonitoringEvidence.aggregate([
           { $match: { monitoringSessionId: { $in: sessionIds } } },
           { $sort: { capturedAt: -1, _id: -1 } },
@@ -626,8 +634,8 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
         ])
       : [];
 
-    // Create evidence map with monitoringSessionId as key
-    const evidenceMap = new Map(latestEvidence.map((item) => [String(item._id), item]));
+    const evidenceByLogId = new Map(latestEvidenceByLog.map((item) => [String(item._id), item]));
+    const evidenceBySessionId = new Map(latestEvidenceBySession.map((item) => [String(item._id), item]));
     const nowTs = Date.now();
 
     const responseLogs = logs.map((log) => {
@@ -654,8 +662,8 @@ const getInstitutionMalpracticeLogs = async (req, res, next) => {
       // Derive resultedInLock from the lock state instead of relying on database field
       const resultedInLock = Boolean(relevantLockActive || log.resultedInLock);
       const isLocked = Boolean(resultedInLock && !log.resolvedAt && relevantLockActive);
-      // Get evidence by monitoringSessionId
-      const evidence = log.monitoringSessionId ? evidenceMap.get(String(log.monitoringSessionId)) : null;
+      const evidence = evidenceByLogId.get(String(log._id))
+        || (log.monitoringSessionId ? evidenceBySessionId.get(String(log.monitoringSessionId)) : null);
 
       // Show lock reason based on the actual violation that caused the lock
       // Always use the log's violation type for unique lock reasons per violation
