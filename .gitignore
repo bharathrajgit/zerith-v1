@@ -20,10 +20,21 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+**/__pycache__/
+**/*.py[cod]
+.venv/
 venv/
+**/.venv/
+**/venv/
+ml-service/.venv/
 ml-service/venv/
+ml-service/__pycache__/
+ml-service/**/*.py[cod]
 ml-training/.kaggle/kaggle.json
 ml-service/malpractices/dataset
+ml-service/data/
+ml-service/runs/
+ml-service/trained_models/
 
 # Local editor files and one-off artifacts
 .vscode/launch.json

@@ -83,7 +83,11 @@ api.interceptors.request.use(
       console.warn(`⚠️ [Request] ${config.method.toUpperCase()} ${config.url} | NO TOKEN FOUND`);
     }
 
-    config.headers["Content-Type"] = "application/json";
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      delete config.headers['Content-Type'];
+    } else {
+      config.headers["Content-Type"] = "application/json";
+    }
 
     return config;
   },

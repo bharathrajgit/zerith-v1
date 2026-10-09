@@ -4,7 +4,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
   LayoutDashboard, BookOpen, Map, TrendingUp, Code2, User, LogOut, 
-  Menu, Sparkles, PlayCircle, X
+  Menu, Sparkles, PlayCircle, X, Mic
 } from 'lucide-react';
 import styles from './StudentLayout.module.css';
 import websiteLogo from '../../assets/websiteLogo.jpeg';
@@ -16,6 +16,7 @@ const navItems = [
   { to: '/roadmap', icon: Map, label: 'Roadmap', badge: 'New' },
   { to: '/progress', icon: TrendingUp, label: 'Progress', badge: null },
   { to: '/coding', icon: Code2, label: 'Coding', badge: null },
+  { to: '/dashboard/coach', icon: Mic, label: 'Coach', badge: null },
   { to: '/profile', icon: User, label: 'Profile', badge: null },
 ];
 

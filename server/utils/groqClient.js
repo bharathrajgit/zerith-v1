@@ -3,7 +3,21 @@ const axios = require('axios');
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
-async function chatWithGroq(messages) {
+class GroqEmptyResponseError extends Error {
+  constructor(model, finishReason, usage) {
+    const details = [
+      `model=${model}`,
+      `finish_reason=${finishReason || 'unknown'}`,
+      usage?.completion_tokens !== undefined
+        ? `completion_tokens=${usage.completion_tokens}`
+        : null,
+    ].filter(Boolean).join(', ');
+    super(`Groq returned an empty or invalid chat response (${details})`);
+    this.name = 'GroqEmptyResponseError';
+  }
+}
+
+async function chatWithGroq(messages, { maxTokens = 400 } = {}) {
   const apiKey = process.env.GROQ_API_KEY;
   const model = process.env.GROQ_MODEL || DEFAULT_MODEL;
 
@@ -16,7 +30,7 @@ async function chatWithGroq(messages) {
     {
       model,
       messages,
-      max_tokens: 400,
+      max_tokens: maxTokens,
       temperature: 0.7,
     },
     {
@@ -28,12 +42,13 @@ async function chatWithGroq(messages) {
     }
   );
 
-  const content = response.data?.choices?.[0]?.message?.content;
+  const choice = response.data?.choices?.[0];
+  const content = choice?.message?.content;
   if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('Groq returned an empty or invalid chat response');
+    throw new GroqEmptyResponseError(model, choice?.finish_reason, response.data?.usage);
   }
 
   return content;
 }
 
-module.exports = { chatWithGroq };
+module.exports = { chatWithGroq, GroqEmptyResponseError };

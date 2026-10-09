@@ -58,6 +58,7 @@ app.use('/api/monitoring', monitoringRoutes);
 app.use('/api/malpractice', malpracticeRoutes.studentRouter);
 app.use('/api/institution/malpractice', malpracticeRoutes.institutionRouter);
 app.use('/api/chat', chatRoutes);
+app.use('/api/coach', require('./routes/coach'));
 
 // Global error handler – prints ANY error value
 app.use((err, req, res, next) => {

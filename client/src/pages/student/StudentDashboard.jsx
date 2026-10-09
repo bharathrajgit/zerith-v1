@@ -1,16 +1,17 @@
 // client/src/pages/student/DashboardPage.jsx
 // ─── REDESIGNED: Mission Control Dark Theme ───────────────────────────────────
-import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import StudentLayout from '../../components/layout/StudentLayout';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import { sendAssistantMessage } from '../../services/chatService';
+import CommunicationCoach from '../../components/Coach/CommunicationCoach';
 import {
   Flame, TrendingUp, BookOpen, Brain, Code2, PlayCircle,
   Send, X, Bot, ChevronRight, Check, Calendar,
   Clock, Award, Activity, Target, Zap, Lock,
-  Sparkles, BarChart2, ChevronUp, AlertTriangle,
+  BarChart2, AlertTriangle,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -543,14 +544,13 @@ const CustomTooltip = ({ active, payload, label }) => {
 export default function StudentDashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [roadmap, setRoadmap] = useState(null);
   const [progress, setProgress] = useState(null);
   const [streak, setStreak] = useState(null);
   const [weakAreas, setWeakAreas] = useState(null);
   const [loadingMain, setLoadingMain] = useState(true);
-  const [loadingWeak, setLoadingWeak] = useState(false);
-  const [activityData, setActivityData] = useState([]);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -558,6 +558,44 @@ export default function StudentDashboardPage() {
   const [chatLoading, setChatLoading] = useState(false);
 
   const chatEndRef = useRef(null);
+
+  const topics = useMemo(() => {
+    const result = [];
+    progress?.moduleProgress?.forEach((module) => {
+      module.topics.forEach((topic) => {
+        if (topic.progress) {
+          result.push({
+            topic_name: topic.topic.title,
+            ...buildWeakAreaPayload(topic.progress),
+          });
+        }
+      });
+    });
+    return result;
+  }, [progress]);
+
+  const activityData = useMemo(() => {
+    if (!Array.isArray(streak?.activityLog)) return [];
+    const activityByDate = new Map();
+    streak.activityLog.forEach((entry) => {
+      const key = new Date(entry.date).toISOString().split('T')[0];
+      const current = activityByDate.get(key) || { tasks: 0, minutes: 0 };
+      activityByDate.set(key, {
+        tasks: current.tasks + (entry.tasksCompleted || 0),
+        minutes: current.minutes + (entry.minutesSpent || 0),
+      });
+    });
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      const key = date.toISOString().split('T')[0];
+      const activity = activityByDate.get(key) || { tasks: 0, minutes: 0 };
+      return {
+        day: date.toLocaleDateString('en-US', { weekday: 'short' }),
+        ...activity,
+      };
+    });
+  }, [streak]);
 
   // Inject CSS once
   useEffect(() => {
@@ -597,37 +635,22 @@ export default function StudentDashboardPage() {
 
   // Weak areas
   useEffect(() => {
-    if (!progress?.moduleProgress) return;
-    const topics = [];
-    progress.moduleProgress.forEach(mod =>
-      mod.topics.forEach(t => {
-        if (t.progress) topics.push({ topic_name: t.topic.title, ...buildWeakAreaPayload(t.progress) });
-      })
-    );
     if (!topics.length) return;
-    setLoadingWeak(true);
+    let cancelled = false;
     api.post('/ml/detect-weak-areas', { topics })
-      .then(({ data }) => { if (data.success) setWeakAreas(data.data); })
-      .catch(() => {})
-      .finally(() => setLoadingWeak(false));
-  }, [progress]);
-
-  // Activity log → chart data
-  useEffect(() => {
-    if (!Array.isArray(streak?.activityLog)) return;
-    const map = new Map();
-    streak.activityLog.forEach(e => {
-      const k = new Date(e.date).toISOString().split('T')[0];
-      const cur = map.get(k) || { tasks: 0, minutes: 0 };
-      map.set(k, { tasks: cur.tasks + (e.tasksCompleted || 0), minutes: cur.minutes + (e.minutesSpent || 0) });
-    });
-    setActivityData(Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (6 - i));
-      const k = d.toISOString().split('T')[0];
-      const e = map.get(k) || { tasks: 0, minutes: 0 };
-      return { day: d.toLocaleDateString('en-US', { weekday: 'short' }), ...e };
-    }));
-  }, [streak]);
+      .then(({ data }) => {
+        if (!cancelled) setWeakAreas(data.success ? data.data : {});
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWeakAreas({});
+          toast.error('Unable to analyse weak areas right now.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [topics]);
 
   // Derived
   const todayTasks     = roadmap?.todayTasks || [];
@@ -655,7 +678,7 @@ export default function StudentDashboardPage() {
   const readinessBadge = readinessBadgeLabel(readinessScore);
   const displayName    = user?.name || user?.username || user?.email?.split('@')[0] || 'Student';
   const streakCount    = streak?.currentStreak || 0;
-
+  const loadingWeak    = topics.length > 0 && weakAreas === null;
   const openTask = async (task) => {
     if (!task?.referenceId || !task?.isUnlocked) return;
     if (['video', 'video-analysis', 'revision'].includes(task.type)) { navigate(`/topic/${task.referenceId}`); return; }
@@ -690,6 +713,14 @@ export default function StudentDashboardPage() {
   const modColor = (pct) =>
     pct >= 80 ? '#10b981' : pct >= 60 ? '#0ea5e9' : pct >= 40 ? '#f59e0b' : pct > 0 ? '#f43f5e' : '#334155';
 
+  if (location.pathname === '/dashboard/coach') return (
+    <StudentLayout>
+      <div className="mc-page">
+        <CommunicationCoach studentName={displayName} />
+      </div>
+    </StudentLayout>
+  );
+
   /* ── Loading skeleton ── */
   if (loadingMain) return (
     <StudentLayout>
@@ -709,7 +740,6 @@ export default function StudentDashboardPage() {
   return (
     <StudentLayout>
       <div className="mc-page">
-
         {/* ── HEADER ─────────────────────────────────────────────────── */}
         <header className="mc-header">
           <div>
