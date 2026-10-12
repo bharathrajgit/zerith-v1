@@ -59,3 +59,20 @@ The ONNX proctor model pipeline lives in `ml-training/`.
 - `PROCTOR_KAGGLE_DATASET` still works as a one-dataset fallback.
 - `ml-training/class_map.proctor.json` is the repo-tracked mapping used by `prepare_dataset.py`.
 - The runtime fallback remains heuristic camera monitoring when `ml-service/trained_models/proctor_monitor.onnx` is absent.
+
+# Demo Login Credentials User Id With Password:
+  ## RTC User ID:
+    - anuradhamcadir@rathinam.in
+    - 12345678
+
+  ## Diagonise Test User ID
+    - bharathraj123@gmail.com
+    - DSA@Xk1h
+
+  ## Intermediate User ID:
+    - mca.test.intermediate1@rathinam.in
+    - DSA@NmOl
+
+  ## Basic User ID:
+    - mca.test.beginner1@rathinam.in
+    - DSA@XaxR
