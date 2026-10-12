@@ -349,13 +349,18 @@ export default function CommunicationCoach({ studentName = '' }) {
     : transcript.startsWith(voiceTranscriptStart)
       ? transcript.slice(voiceTranscriptStart.length).trim()
       : transcript.trim();
-  const answerToSubmit = isVoiceMode ? speechAnswer : studentAnswer.trim();
+  const answerToSubmit = studentAnswer.trim();
   const isResumeWaiting = activeMode === 'resume' && !currentQuestion && !sessionComplete;
   const visibleQuestionCount = totalQuestions || sessionData?.questions?.length || 0;
   const questionCounter = activeMode === 'dsa'
     ? `Question ${questionIndex + 1}`
     : `Question ${Math.min(questionIndex + 1, visibleQuestionCount || 1)} of ${visibleQuestionCount || 1}`;
   const groupTurnNumber = GROUP_TURNS.indexOf(currentTurn) + 1;
+
+  useEffect(() => {
+    if (!isVoiceMode || !speechAnswer) return;
+    setStudentAnswer(speechAnswer);
+  }, [isVoiceMode, speechAnswer]);
 
   useEffect(() => {
     if (!isVoiceMode || !currentQuestion || questionSpokenRef.current === currentQuestion) return;
@@ -931,7 +936,7 @@ export default function CommunicationCoach({ studentName = '' }) {
   const canSubmit = Boolean(answerToSubmit) && !isLoading && !isResumeWaiting;
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-4 bg-[#080C14] p-4 text-slate-100 sm:p-6">
+    <div className="mx-auto w-full max-w-7xl min-w-0 space-y-4 overflow-x-hidden bg-[#080C14] p-4 text-slate-100 sm:p-6">
       {errorMessage && (
         <div role="alert" className="flex items-start justify-between gap-4 rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm text-red-200">
           <span>{errorMessage}</span>
@@ -1007,7 +1012,7 @@ export default function CommunicationCoach({ studentName = '' }) {
           extractedInfo={extractedInfo}
         />
       ) : activeMode === 'group' ? (
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.25fr_1fr]">
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_minmax(0,1fr)]">
           <ParticipantPanel
             label="Participant A"
             color="rose"
@@ -1015,7 +1020,7 @@ export default function CommunicationCoach({ studentName = '' }) {
             emptyMessage="Their opening viewpoint will appear here."
           />
 
-          <main className="space-y-4">
+          <main className="min-w-0 space-y-4">
             <section className="relative overflow-hidden rounded-xl border border-white/5 bg-[#0F172A] p-5 pl-6">
               <span className="absolute inset-y-0 left-0 w-[3px] bg-violet-500" aria-hidden="true" />
               <span className="inline-flex rounded-full bg-violet-500/15 px-3 py-1 text-xs font-semibold text-violet-300">
@@ -1130,8 +1135,8 @@ export default function CommunicationCoach({ studentName = '' }) {
           />
         </div>
       ) : (
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,3fr)_minmax(18rem,2fr)]">
-          <main className="space-y-4">
+        <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(18rem,2fr)]">
+          <main className="min-w-0 space-y-4">
             {extractedInfo && activeMode === 'resume' && (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-200">
                 <strong>Questions personalised for {extractedInfo.name || 'your resume'}.</strong>
@@ -1172,9 +1177,21 @@ export default function CommunicationCoach({ studentName = '' }) {
                   <p className="text-sm font-medium text-slate-300">
                     {isListening ? 'Listening… pause for three seconds or stop recording.' : 'Tap to speak your answer.'}
                   </p>
-                  <div className="min-h-24 w-full rounded-lg border border-white/10 bg-slate-800 p-4 text-sm leading-relaxed text-slate-100">
-                    {speechAnswer || <span className="text-slate-500">Your live transcript will appear here.</span>}
-                  </div>
+                  <label className="w-full">
+                    <span className="mb-2 block text-sm font-semibold text-slate-200">Your answer</span>
+                    <textarea
+                      ref={answerRef}
+                      value={studentAnswer}
+                      onChange={(event) => setStudentAnswer(event.target.value)}
+                      maxLength={10000}
+                      rows={6}
+                      placeholder="Your spoken words will appear here. You can edit them before submitting."
+                      className="min-h-36 w-full resize-y rounded-lg border border-white/10 bg-slate-800 px-4 py-3 text-sm leading-relaxed text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+                    />
+                    <span className="mt-1 block text-right text-xs text-slate-500">
+                      {studentAnswer.length}/10,000
+                    </span>
+                  </label>
                   {!isSpeechRecognitionSupported && (
                     <p role="status" className="w-full rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
                       Voice input is not supported in this browser. Please use Chrome or Edge.
@@ -1236,7 +1253,7 @@ export default function CommunicationCoach({ studentName = '' }) {
             )}
           </main>
 
-          <aside className="space-y-4">
+          <aside className="min-w-0 space-y-4">
             {lastResult ? (
               <>
                 <ScoreCard
